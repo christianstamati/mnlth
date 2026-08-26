@@ -3,7 +3,7 @@
 // CloudFront distribution ID of the Router that the production stage creates.
 // Other stages adopt it instead of provisioning their own, since creating a
 // distribution costs several minutes. Deploy production first, then copy its
-// `router` output here.
+// `distribution` output here.
 const DISTRIBUTION = "E1ZB3K2NLXU17L"
 
 // The Route 53 public hosted zone for this domain must already exist — SST
@@ -32,7 +32,7 @@ export default $config({
         })
       : sst.aws.Router.get("Router", DISTRIBUTION)
 
-    const web = new sst.aws.TanStackStart("Web", {
+    new sst.aws.TanStackStart("Web", {
       path: "apps/web",
       environment: {
         // VITE_ prefixed vars are inlined into the client bundle at build
@@ -46,8 +46,7 @@ export default $config({
     })
 
     return {
-      url: web.url,
-      router: router.distributionID,
+      distribution: router.distributionID,
     }
   },
 })
