@@ -9,10 +9,14 @@
     "format": "biome format --write .",
     "check": "biome check --write .",
     "check:ci": "biome ci .",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "sst:dev": "sst dev",
+    "sst:deploy": "sst deploy",
+    "sst:remove": "sst remove"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.9",
+    "sst": "^4.17.1",
     "turbo": "^2.9.18",
     "typescript": "^6"
   },

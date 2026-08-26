@@ -16,3 +16,7 @@ todos.json
 
 # typescript
 *.tsbuildinfo
+
+# sst
+.sst
+sst-env.d.ts
