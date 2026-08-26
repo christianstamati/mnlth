@@ -34,6 +34,11 @@ export default $config({
 
     const web = new sst.aws.TanStackStart("Web", {
       path: "apps/web",
+      environment: {
+        // VITE_ prefixed vars are inlined into the client bundle at build
+        // time, so they are public. Never put secrets here.
+        VITE_STAGE_NAME: $app.stage,
+      },
       router: {
         instance: router,
         domain: isProd ? DOMAIN : `${$app.stage}.${DOMAIN}`,
