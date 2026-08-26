@@ -1,11 +1,5 @@
 /// <reference path="./.sst/platform/config.d.ts" />
 
-// CloudFront distribution ID of the Router that the production stage creates.
-// Other stages adopt it instead of provisioning their own, since creating a
-// distribution costs several minutes. Deploy production first, then copy its
-// `distribution` output here.
-const DISTRIBUTION = "E1ZB3K2NLXU17L"
-
 // The Route 53 public hosted zone for this domain must already exist — SST
 // looks it up and never creates one. Point the registrar's nameservers at that
 // zone, or ACM certificate validation will hang on the first deploy.
@@ -25,6 +19,20 @@ export default $config({
   async run() {
     const isProd = $app.stage === "production"
 
+    // Production owns the Router and publishes its distribution ID here; every
+    // other stage adopts that distribution instead of provisioning its own,
+    // since creating one costs several minutes.
+    //
+    // Ownership stays pinned to production rather than going to whichever stage
+    // deploys first: the owner's state holds the distribution, so a stage that
+    // created it would destroy it on `sst remove` — and non-prod stages are
+    // `removal: "remove"`. Branching on ownership rather than on whether the
+    // parameter exists also keeps production stable, since an existence check
+    // would send it down the adopt branch on its second deploy and delete the
+    // distribution out from under every other stage.
+    const path = `/sst/${$app.name}/shared-router`
+    const name = `${path}/distribution-id`
+
     const router = isProd
       ? new sst.aws.Router("Router", {
           domain: {
@@ -32,7 +40,15 @@ export default $config({
             aliases: [`*.${DOMAIN}`],
           },
         })
-      : sst.aws.Router.get("Router", DISTRIBUTION)
+      : sst.aws.Router.get("Router", await lookupDistribution())
+
+    if (isProd) {
+      new aws.ssm.Parameter("RouterDistributionID", {
+        name,
+        type: "String",
+        value: router.distributionID,
+      })
+    }
 
     new sst.aws.TanStackStart("Web", {
       path: "apps/web",
@@ -49,6 +65,21 @@ export default $config({
 
     return {
       distribution: router.distributionID,
+    }
+
+    async function lookupDistribution() {
+      // Query the parent path, not the parameter name — SSM returns nothing
+      // when the path is an exact name. Unlike getParameter, this returns an
+      // empty list rather than throwing, so a missing Router can't be confused
+      // with a credentials failure.
+      const { values } = await aws.ssm.getParametersByPath({ path })
+      const id = values.at(0)
+      if (!id) {
+        throw new Error(
+          `No shared Router at ${name}. Deploy production first: sst deploy --stage production`
+        )
+      }
+      return id
     }
   },
 })
