@@ -1,4 +1,4 @@
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router"
+import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router"
 
 import appCss from "@workspace/ui/globals.css?url"
 
