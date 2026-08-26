@@ -5,14 +5,17 @@
 // zone, or ACM certificate validation will hang on the first deploy.
 const DOMAIN = "fullstackaws.dev"
 
-const PROTECT = true
-
 export default $config({
   app(input) {
     return {
       name: "mnlth",
       removal: input?.stage === "production" ? "retain" : "remove",
-      protect: PROTECT ? ["production"].includes(input?.stage) : false,
+      // Disarm for a single command with SST_UNPROTECT=1, e.g.
+      // `SST_UNPROTECT=1 sst remove --stage production`. Deliberately an env
+      // var rather than stored state: a guard you can persist is one you can
+      // disarm and forget, and CI would inherit it. This re-arms by itself.
+      protect:
+        process.env.SST_UNPROTECT !== "1" && input?.stage === "production",
       home: "aws",
     }
   },
