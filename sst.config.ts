@@ -11,12 +11,14 @@ const DISTRIBUTION = "E1ZB3K2NLXU17L"
 // zone, or ACM certificate validation will hang on the first deploy.
 const DOMAIN = "fullstackaws.dev"
 
+const PROTECT = true
+
 export default $config({
   app(input) {
     return {
       name: "mnlth",
       removal: input?.stage === "production" ? "retain" : "remove",
-      protect: ["production"].includes(input?.stage),
+      protect: PROTECT ? ["production"].includes(input?.stage) : false,
       home: "aws",
     }
   },
