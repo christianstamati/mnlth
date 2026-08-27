@@ -94,7 +94,7 @@ export default $config({
       { dependsOn: [convex] }
     )
 
-    new sst.aws.TanStackStart("Web", {
+    new sst.aws.TanStackStart("Frontend", {
       path: "apps/web",
       environment: {
         // VITE_ prefixed vars are inlined into the client bundle at build
