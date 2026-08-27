@@ -1,8 +1,6 @@
 /// <reference path="./.sst/platform/config.d.ts" />
 
-// The Route 53 public hosted zone for this domain must already exist — SST
-// looks it up and never creates one. Point the registrar's nameservers at that
-// zone, or ACM certificate validation will hang on the first deploy.
+// The Route 53 hosted zone must already exist — SST looks it up, never creates it.
 const DOMAIN = "fullstackaws.dev"
 
 // The self-hosted Convex backend, as published by docker-compose.yaml.
@@ -13,10 +11,9 @@ export default $config({
     return {
       name: "mnlth",
       removal: input?.stage === "production" ? "retain" : "remove",
-      // Disarm for a single command with SST_UNPROTECT=1, e.g.
-      // `SST_UNPROTECT=1 bun sst remove --stage production`. Deliberately an env
-      // var rather than stored state: a guard you can persist is one you can
-      // disarm and forget, and CI would inherit it. This re-arms by itself.
+      // Disarm for a single command, e.g.
+      // `SST_UNPROTECT=1 bun sst remove --stage production`. An env var, not
+      // stored state, so it re-arms by itself.
       protect:
         process.env.SST_UNPROTECT !== "1" && input?.stage === "production",
       home: "aws",
@@ -31,23 +28,16 @@ export default $config({
   async run() {
     const isProd = $app.stage === "production"
 
-    // Production owns the Router and publishes its distribution ID here; every
-    // other stage adopts that distribution instead of provisioning its own,
-    // since creating one costs several minutes.
-    //
-    // Ownership stays pinned to production rather than going to whichever stage
-    // deploys first: the owner's state holds the distribution, so a stage that
-    // created it would destroy it on `sst remove` — and non-prod stages are
-    // `removal: "remove"`. Branching on ownership rather than on whether the
-    // parameter exists also keeps production stable, since an existence check
-    // would send it down the adopt branch on its second deploy and delete the
-    // distribution out from under every other stage.
+    // Production owns the Router and publishes its distribution ID here; other
+    // stages adopt it instead of paying minutes to create their own. Ownership
+    // is pinned to production rather than to the first deployer or to whether
+    // the parameter exists — either would let a stage delete the distribution
+    // out from under the others.
     const path = `/sst/${$app.name}/shared-router`
     const name = `${path}/distribution-id`
 
-    // `sst dev` serves the site from localhost, so no distribution is involved.
-    // Skipping it there also keeps local development from depending on
-    // production: the adopt branch throws when the parameter is missing.
+    // `sst dev` serves from localhost, so there is no distribution — and the
+    // adopt branch would throw when the parameter is missing.
     const router = $dev
       ? undefined
       : isProd
@@ -67,10 +57,8 @@ export default $config({
       })
     }
 
-    // Local development runs the whole Convex stack in Docker — Postgres, the
-    // self-hosted backend, and the dashboard — so `sst dev` is the only command
-    // needed to bring the environment up. Both are dev-only: SST skips
-    // DevCommand entirely on `sst deploy`.
+    // The whole Convex stack (Postgres, backend, dashboard) runs in Docker, so
+    // `sst dev` alone brings the environment up. DevCommands are skipped on deploy.
     const convex = new sst.x.DevCommand("Convex", {
       dev: {
         title: "convex backend",
@@ -80,8 +68,7 @@ export default $config({
     })
 
     // The CLI needs the backend answering before it can push functions, so this
-    // goes through a script that waits and mints the admin key on first run.
-    // dependsOn only orders the resources, not the processes.
+    // script waits and mints the admin key. dependsOn orders resources, not processes.
     new sst.x.DevCommand(
       "ConvexFunctions",
       {
@@ -97,12 +84,10 @@ export default $config({
     new sst.aws.TanStackStart("Frontend", {
       path: "apps/web",
       environment: {
-        // VITE_ prefixed vars are inlined into the client bundle at build
-        // time, so they are public. Never put secrets here.
+        // VITE_ vars are inlined into the client bundle. Never put secrets here.
         VITE_STAGE_NAME: $app.stage,
-        // Only the local backend exists today — deploying Convex itself (EC2 +
-        // a managed Postgres) is still out of scope, so deployed stages read the
-        // URL from the environment rather than hardcoding one that isn't up.
+        // Deploying Convex itself is still out of scope, so deployed stages read
+        // the URL from the environment.
         VITE_CONVEX_URL: $dev
           ? CONVEX_LOCAL_URL
           : (process.env.CONVEX_URL ?? ""),
@@ -116,10 +101,8 @@ export default $config({
     return router ? { distribution: router.distributionID } : {}
 
     async function lookupDistribution() {
-      // Query the parent path, not the parameter name — SSM returns nothing
-      // when the path is an exact name. Unlike getParameter, this returns an
-      // empty list rather than throwing, so a missing Router can't be confused
-      // with a credentials failure.
+      // Query the parent path, not the name — SSM returns nothing for an exact
+      // name, and unlike getParameter this returns [] instead of throwing.
       const { values } = await aws.ssm.getParametersByPath({ path })
       const id = values.at(0)
       if (!id) {
