@@ -1,7 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalPassThroughEnv": ["SST_UNPROTECT"],
+  "globalPassThroughEnv": ["SST_UNPROTECT", "CONVEX_URL"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
