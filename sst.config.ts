@@ -42,24 +42,21 @@ export default $config({
   app(input) {
     return {
       name: "mnlth",
-      // Both guards lift on the same escape hatch:
+      // SST's stock pattern. `protect` refuses `sst remove --stage
+      // production` outright. `retain` covers the resources that hold data
+      // or that other stages share, meaning the VPC, its subnets, and the
+      // RDS instance, subnet group and parameter group.
       //
-      //   SST_UNPROTECT=1 bun sst deploy --stage production
-      //   SST_UNPROTECT=1 bun sst remove --stage production
-      //
-      // Deploy first: the database also carries RDS-level deletionProtection
-      // (see the Postgres transform), which has to be off in AWS before
-      // anything can take the server away. Without the env var, production
-      // refuses removal (`protect`), and even forced it would leave the
-      // database, VPC and subnets behind, since `retain` drops them from
-      // state without calling AWS. An env var rather than a code change, so
-      // teardown is deliberate but needs no commit.
-      removal:
-        process.env.SST_UNPROTECT !== "1" && input?.stage === "production"
-          ? "retain"
-          : "remove",
-      protect:
-        process.env.SST_UNPROTECT !== "1" && input?.stage === "production",
+      // Tearing production down is therefore a deliberate edit rather than a
+      // flag. Set both to false here, deploy once so the new policy and the
+      // RDS deletionProtection below reach state and AWS, then remove. That
+      // deploy is the step worth not skipping. `retain` drops resources from
+      // state without calling AWS, so a removal without it reports success
+      // and leaves a VPC and a live database behind, and the shared-VPC
+      // guard in run() then refuses to deploy past the wreckage.
+      // docs/deployment-removal.md has the full list of what survives.
+      removal: input?.stage === "production" ? "retain" : "remove",
+      protect: input?.stage === "production",
       home: "aws",
       providers: {
         aws: {
@@ -104,12 +101,21 @@ export default $config({
     // branch names the internet gateway differently, declares no route-table
     // associations, and drops the Secrets Manager secret every stage reads
     // the database password from. Pulumi would start deleting live shared
-    // infrastructure.
+    // infrastructure. What production does instead is refuse to deploy when
+    // it finds shared infrastructure it does not own. See the guard below.
     //
     // Hence the order: production deploys first and is removed last. RDS
     // takes ~10 minutes; other stages fail fast below until it exists.
     const sharedName = $app.name
     const sharedDatabaseId = `${$app.name}-postgres`
+
+    // The one record of which VPC production owns, and the only thing that
+    // separates a live shared VPC from a carcass. `retain` leaves the VPC
+    // and its subnets in AWS but drops them from state, tags and all. SSM
+    // parameters are not on the retain list, so the marker goes with the
+    // state, and its absence next to a tagged VPC is exactly the
+    // "state lost, resources kept" case.
+    const sharedVpcIdParameter = `/${$app.name}/shared/vpc-id`
 
     // SST names resources `<app>-<stage>-<resource>` through a Name tag, but
     // only when the resource has no tags of its own. These tags do both jobs:
@@ -129,6 +135,39 @@ export default $config({
           Name: name,
         }
       }
+
+    // Every stage resolves the shared VPC through the same tag, and both
+    // branches below treat more than one match as an error rather than
+    // picking arbitrarily.
+    const [taggedVpcIds, ownedVpcId] = await Promise.all([
+      aws.ec2
+        .getVpcs({
+          filters: [{ name: "tag:sst:shared", values: [sharedName] }],
+        })
+        .then(({ ids }) => ids),
+      aws.ssm
+        .getParameter({ name: sharedVpcIdParameter })
+        .then(({ value }) => value)
+        .catch(() => undefined),
+    ])
+
+    // Production cannot answer "one already exists" by switching to Vpc.get:
+    // the probe would find its own VPC on the very next deploy, flip the
+    // branch, and hand Pulumi a program that no longer declares the subnets
+    // and route tables it is managing. So it refuses instead. A tag alone
+    // cannot say who owns what, since a carcass carries the same tags the
+    // live VPC does; the marker can.
+    if (isProd) {
+      const strays = taggedVpcIds.filter((id) => id !== ownedVpcId)
+      if (strays.length > 0)
+        throw new Error(
+          `Found ${strays.length} VPC(s) tagged sst:shared=${sharedName} that this stage does not own: ${strays.join(", ")}. ` +
+            (ownedVpcId
+              ? `Production owns ${ownedVpcId}.`
+              : `${sharedVpcIdParameter} is missing, so production's state owns no VPC at all: a teardown dropped it from state and left it in AWS.`) +
+            ` Deploying now would add yet another VPC with the same tags. Delete the stray VPC(s) and their subnets, or import them into this stage's state, then deploy again.`
+        )
+    }
 
     // No NAT gateway: the backend sits in a public subnet with an Elastic IP,
     // and nothing in the private subnets needs egress.
@@ -151,25 +190,37 @@ export default $config({
         })
       : sst.aws.Vpc.get(
           "Vpc",
-          await aws.ec2
-            .getVpcs({
-              filters: [{ name: "tag:sst:shared", values: [sharedName] }],
-            })
-            .then(({ ids }) => {
-              if (ids.length === 0)
-                throw new Error(
-                  `No VPC tagged sst:shared=${sharedName} found. Deploy the production stage first.`
-                )
-              return ids[0]
-            })
+          (() => {
+            if (taggedVpcIds.length === 0)
+              throw new Error(
+                `No VPC tagged sst:shared=${sharedName} found. Deploy the production stage first.`
+              )
+            if (taggedVpcIds.length > 1)
+              throw new Error(
+                `${taggedVpcIds.length} VPCs are tagged sst:shared=${sharedName}: ${taggedVpcIds.join(", ")}. Deploy the production stage to find out which one it owns.`
+              )
+            return taggedVpcIds[0]
+          })()
         )
+
+    // Written only by the stage that owns the VPC, and read by the guard
+    // above on the next deploy. `overwrite` so a marker seeded by hand, to
+    // adopt a VPC that predates this guard, is taken over rather than
+    // colliding.
+    if (isProd)
+      new aws.ssm.Parameter("SharedVpcId", {
+        name: sharedVpcIdParameter,
+        type: "String",
+        value: vpc.id,
+        overwrite: true,
+      })
 
     // The Postgres component creates its password secret with no transform
     // hook of its own, hence the global transform. An explicit name beats
     // Pulumi's `<app>-<stage>-<logical>-<random>` autonaming and keeps the
     // stage out of the one secret every stage reads. Renaming replaces the
-    // secret, and production protects its resources, so the rename lands via
-    // an SST_UNPROTECT=1 deploy followed by a normal one.
+    // secret, which `protect` will not allow, so a rename means relaxing
+    // `protect` in app() for the one deploy that lands it.
     $transform(aws.secretsmanager.Secret, (args, _opts, name) => {
       if (name !== "DatabaseProxySecret" || !args) return
       args.name = `${sharedDatabaseId}-password`
@@ -197,16 +248,14 @@ export default $config({
           // expect is TLS trust, which POSTGRES_CA_URL in userData handles.
           version: "18",
           transform: {
-            // Function form, because retainOnDelete is a resource option, not
-            // an InstanceArgs field. Shared data outlives the stack twice
-            // over: retainOnDelete keeps `sst remove` off the server, and
-            // deletionProtection makes RDS itself refuse deletion. The latter
-            // rides the same SST_UNPROTECT escape hatch but lives in AWS, so
-            // a real teardown deploys once with the var set before removing.
-            instance: (args, opts) => {
-              args.identifier = sharedDatabaseId
-              args.deletionProtection = process.env.SST_UNPROTECT !== "1"
-              opts.retainOnDelete = true
+            // No retainOnDelete here. `removal: "retain"` in app() already
+            // sets it on aws:rds/instance:Instance, and a second copy would
+            // only drift. deletionProtection is the AWS-side guard on top,
+            // and the slow one to undo. It lives on the instance, so
+            // clearing it takes a deploy before any remove can land.
+            instance: {
+              identifier: sharedDatabaseId,
+              deletionProtection: true,
             },
           },
         })
