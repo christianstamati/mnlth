@@ -163,6 +163,17 @@ export default $config({
             })
         )
 
+    // The Postgres component creates its password secret with no transform
+    // hook of its own, hence the global transform. An explicit name beats
+    // Pulumi's `<app>-<stage>-<logical>-<random>` autonaming and keeps the
+    // stage out of the one secret every stage reads. Renaming replaces the
+    // secret, and production protects its resources, so the rename lands via
+    // an SST_UNPROTECT=1 deploy followed by a normal one.
+    $transform(aws.secretsmanager.Secret, (args, _opts, name) => {
+      if (name !== "DatabaseProxySecret" || !args) return
+      args.name = `${sharedDatabaseId}-password`
+    })
+
     // Plain rds.Instance, not Aurora. `database` only seeds the server; the
     // databases that matter are the per-stage ones bootstrap.sh creates,
     // connecting through the `postgres` maintenance database RDS always has.
