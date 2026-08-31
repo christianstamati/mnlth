@@ -27,15 +27,16 @@ const REGION = "eu-central-1"
 const CONVEX_IMAGE_TAG = "c0cb7ae17f54e14846c243c5332a8a5e6d0e19d4" // = latest on 2026-08-28
 const COMPOSE_PLUGIN_VERSION = "v5.5.0"
 
-// The stack lives in its own repo. The instance fetches bootstrap.sh and the
-// docker-compose.yaml next to it at boot, so it runs the same stack as a
-// laptop; everything stage-specific is passed as environment below. The repo
-// has to stay public, since the curls carry no credentials, and the `main`
-// ref means a replaced instance picks up current main. Swap in a commit SHA
-// when a deployment has to be reproducible. Caddy's image tag is pinned in
-// the repo's docker-compose.yaml.
-const BOOTSTRAP_SCRIPT =
-  "https://raw.githubusercontent.com/christianstamati/self-hosted-convex/main/bootstrap.sh"
+// The stack lives in its own repo; this points at its raw content on `main`.
+// The instance fetches bootstrap.sh and docker-compose.yaml from here at
+// boot, so it runs the same stack as a laptop; everything stage-specific is
+// passed as environment below. The repo has to stay public, since the curls
+// carry no credentials, and the `main` ref means a replaced instance picks
+// up current main. Swap in a commit SHA when a deployment has to be
+// reproducible. Caddy's image tag is pinned in the repo's
+// docker-compose.yaml.
+const SELF_HOSTED_CONVEX_REPO =
+  "https://raw.githubusercontent.com/christianstamati/self-hosted-convex/main"
 
 export default $config({
   app(input) {
@@ -335,10 +336,6 @@ export default $config({
       { role: role.name }
     )
 
-    // docker-compose.yaml and whatever else bootstrap.sh fetches through
-    // REPO_RAW_BASE sit next to the script.
-    const rawBase = BOOTSTRAP_SCRIPT.slice(0, BOOTSTRAP_SCRIPT.lastIndexOf("/"))
-
     const userData = $interpolate`#!/bin/bash
 # No -x: this script handles the database password, and userData plus
 # everything it echoes lands in the cloud-init log.
@@ -358,14 +355,15 @@ usermod -aG docker ec2-user
 systemctl enable --now docker
 
 # ---- the stack ----
-# Both files come from the repo unmodified; what boots here is what was tested
-# on a laptop. Only the environment passed to bootstrap.sh below differs.
+# Only the script is fetched here; it pulls docker-compose.yaml itself
+# through REPO_RAW_BASE. Both come from the repo unmodified, so what boots
+# here is what was tested on a laptop; only the environment passed to
+# bootstrap.sh below differs.
 STACK_DIR=/home/ec2-user/convex-backend
 mkdir -p "$STACK_DIR"
 cd "$STACK_DIR"
 
-curl -fsSL -o bootstrap.sh ${BOOTSTRAP_SCRIPT}
-curl -fsSL -o docker-compose.yaml ${rawBase}/docker-compose.yaml
+curl -fsSL -o bootstrap.sh ${SELF_HOSTED_CONVEX_REPO}/bootstrap.sh
 chmod +x bootstrap.sh
 
 # The connection string lives in SSM, not in this script, since userData is
@@ -395,7 +393,7 @@ CONVEX_DASHBOARD_DOMAIN=${convexDomain.dashboard} \\
 USE_HTTPS=1 \\
 POSTGRES_CA_URL=https://truststore.pki.rds.amazonaws.com/${REGION}/${REGION}-bundle.pem \\
 CONVEX_IMAGE_TAG=${CONVEX_IMAGE_TAG} \\
-REPO_RAW_BASE=${rawBase} \\
+REPO_RAW_BASE=${SELF_HOSTED_CONVEX_REPO} \\
   ./bootstrap.sh
 
 # bootstrap.sh creates the database, brings the stack up, waits for the
