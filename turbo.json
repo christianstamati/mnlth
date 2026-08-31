@@ -1,7 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalPassThroughEnv": ["SST_UNPROTECT", "CONVEX_URL"],
+  "globalPassThroughEnv": ["VITE_CONVEX_URL", "VITE_STAGE_NAME"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

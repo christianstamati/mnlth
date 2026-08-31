@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "convex dev",
+    "deploy": "convex deploy",
     "dashboard": "convex dashboard",
     "typecheck": "tsc --noEmit -p convex"
   },

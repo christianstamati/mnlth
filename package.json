@@ -12,7 +12,8 @@
     "typecheck": "turbo typecheck",
     "sst:dev": "sst dev",
     "sst:deploy": "sst deploy",
-    "sst:remove": "sst remove"
+    "sst:remove": "sst remove",
+    "convex:deploy": "bun scripts/convex-deploy.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.9",

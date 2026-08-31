@@ -1,16 +1,24 @@
 /// <reference path="./.sst/platform/config.d.ts" />
 
+import { randomBytes } from "node:crypto"
+
 /**
- * Self-hosted Convex on one EC2 instance behind Caddy, backed by RDS
- * Postgres. One instance and one database per stage; production owns the
- * shared VPC and Postgres server, so deploy that stage first.
+ * A TanStack Start frontend on CloudFront and a self-hosted Convex backend on
+ * one EC2 instance behind Caddy, backed by RDS Postgres and S3. One instance
+ * and one database per stage; production owns the shared VPC and Postgres
+ * server, so deploy that stage first.
  *
- *   bun sst deploy --stage production   ->  api.fullstackaws.dev
- *   bun sst deploy --stage dev          ->  api.dev.fullstackaws.dev
+ *   bun sst deploy --stage production   ->  fullstackaws.dev, api.fullstackaws.dev
+ *   bun sst deploy --stage dev          ->  dev.fullstackaws.dev, api.dev.fullstackaws.dev
  */
 
 const BASE_DOMAIN = "fullstackaws.dev"
 const REGION = "eu-central-1"
+
+// The backend as docker-compose.yaml at the repo root publishes it on a
+// laptop. `sst dev` runs that stack rather than the deployed one, so the
+// frontend points here instead of at the instance.
+const CONVEX_LOCAL_URL = "http://127.0.0.1:3210"
 
 // Pinned so a replaced instance runs the stack it was tested against, not
 // whatever shipped that morning. Bump with care: the backend migrates the
@@ -277,6 +285,92 @@ export default $config({
       value: postgresUrl,
     })
 
+    // ---- object storage ---------------------------------------------------
+
+    // Convex keeps snapshots, function modules, user files and search indexes
+    // on the container's volume by default, which a replaced instance carries
+    // away with it. These five move all of it to S3. The variable names are
+    // the backend's, one bucket each, and the set is fixed:
+    // https://github.com/get-convex/convex-backend/blob/main/self-hosted/advanced/s3_storage.md
+    //
+    // Per stage, like the database. Production retains its buckets on removal
+    // through `removal: "retain"` in app(); every other stage's are emptied and
+    // deleted, since SST sets forceDestroy on every bucket it makes.
+    //
+    // Switching a deployment that already holds data between local and S3
+    // storage is a `convex export` and `convex import --replace-all`, not a
+    // restart: the rows keep pointing at storage the new backend cannot read.
+    const storageBuckets = {
+      S3_STORAGE_EXPORTS_BUCKET: new sst.aws.Bucket("ExportsBucket"),
+      S3_STORAGE_SNAPSHOT_IMPORTS_BUCKET: new sst.aws.Bucket(
+        "SnapshotImportsBucket"
+      ),
+      S3_STORAGE_MODULES_BUCKET: new sst.aws.Bucket("ModulesBucket"),
+      S3_STORAGE_FILES_BUCKET: new sst.aws.Bucket("FilesBucket"),
+      S3_STORAGE_SEARCH_BUCKET: new sst.aws.Bucket("SearchBucket"),
+    }
+
+    // A long-lived access key rather than the instance role, because the
+    // containers cannot reach IMDS: the hop limit of 1 set on the instance
+    // below is exactly what keeps Convex actions from reading the role's
+    // credentials, and it costs the backend its own. A user scoped to these
+    // five buckets is the smaller of the two blast radii.
+    const storageUser = new aws.iam.User("ConvexStorageUser")
+
+    new aws.iam.UserPolicy("ConvexStorageUserPolicy", {
+      user: storageUser.name,
+      policy: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            // The backend reads, writes and deletes; s3:* over five buckets it
+            // is the only principal for is narrower than it looks.
+            Action: ["s3:*"],
+            Resource: Object.values(storageBuckets).flatMap((bucket) => [
+              bucket.arn,
+              $interpolate`${bucket.arn}/*`,
+            ]),
+          },
+        ],
+      },
+    })
+
+    const storageAccessKey = new aws.iam.AccessKey("ConvexStorageAccessKey", {
+      user: storageUser.name,
+    })
+
+    // One record, two consumers: the deployed backend reads it out of SSM at
+    // boot, and the DevCommand at the bottom hands the same variables to the
+    // local compose stack.
+    const storageEnvironment = {
+      AWS_REGION: REGION,
+      AWS_ACCESS_KEY_ID: storageAccessKey.id,
+      AWS_SECRET_ACCESS_KEY: storageAccessKey.secret,
+      ...Object.fromEntries(
+        Object.entries(storageBuckets).map(([variable, bucket]) => [
+          variable,
+          bucket.name,
+        ])
+      ),
+    }
+
+    // Same reasoning as the connection string above: the secret access key must
+    // not go anywhere near userData. Shaped as a shell fragment because that is
+    // what the instance does with it — sources it, so bootstrap.sh sees the
+    // variables the way a laptop run would. Values are quoted because they are
+    // sourced rather than parsed; a secret access key is base64, and `+` and
+    // `/` in an unquoted assignment only happen to be safe.
+    const storageEnvParameter = new aws.ssm.Parameter("ConvexStorageEnv", {
+      name: `/${$app.name}/${$app.stage}/convex/storage-env`,
+      type: "SecureString",
+      value: $resolve(storageEnvironment).apply((environment) =>
+        Object.entries(environment)
+          .map(([variable, value]) => `${variable}='${value}'`)
+          .join("\n")
+      ),
+    })
+
     // ---- instance ---------------------------------------------------------
 
     // Amazon Linux 2023 on arm64. Convex publishes linux/arm64 images for
@@ -337,10 +431,74 @@ export default $config({
     // replacement. The DNS records below point here, not at the instance.
     const eip = new aws.ec2.Eip("ConvexEip", { domain: "vpc" })
 
-    // ---- instance role ------------------------------------------------------
+    // ---- the deployment's own credentials ----------------------------------
 
-    // The admin key can only come from the running backend, so bootstrap.sh
-    // mints it at boot and writes it to STACK_DIR/admin-key on the box.
+    // The backend's identity. It mints admin keys from this and validates them
+    // against it, so a key is only ever good for the instance secret and the
+    // INSTANCE_NAME it was cut from — `production|...` does not open `dev`.
+    //
+    // Left unset, the container generates one on first start and keeps it on
+    // its data volume, so a replaced host is a new deployment and every key
+    // minted against the old one starts answering 401. Since
+    // userDataReplaceOnChange means editing the script below replaces the host,
+    // that would happen quietly and often. Owning the value here instead makes
+    // keys outlive the host, and lets one be cut without the host existing:
+    //
+    //   docker run --rm --entrypoint ./generate_key \
+    //     ghcr.io/get-convex/convex-backend:${CONVEX_IMAGE_TAG} <stage> <secret>
+    //
+    // ignoreChanges is what makes it stick. The value below is re-rolled on
+    // every evaluation of this config, so without it each deploy would push a
+    // new secret and undo the whole point; with it, only the first deploy's
+    // value is ever written. Rotating is therefore deliberate: delete the
+    // parameter, or `pulumi state` it out. That invalidates every key at once,
+    // since there is no per-key revocation to reach for.
+    const instanceSecretParameter = new aws.ssm.Parameter(
+      "ConvexInstanceSecret",
+      {
+        name: `/${$app.name}/${$app.stage}/convex/instance-secret`,
+        type: "SecureString",
+        // 32 bytes hex is what the container generates for itself
+        // (`openssl rand -hex 32`), and generate_key rejects anything shorter.
+        value: randomBytes(32).toString("hex"),
+      },
+      { ignoreChanges: ["value"] }
+    )
+
+    // The two variables the Convex CLI reads for a self-hosted deployment.
+    // Together they are what `convex deploy` needs to push this repo's
+    // functions at a stage, and they are published rather than kept on the box
+    // so that pushing does not mean opening a shell on it.
+    //
+    // The URL is the same one the browser uses and is not a secret, so it is a
+    // plain String: reading it needs no decrypt permission.
+    new aws.ssm.Parameter("ConvexUrl", {
+      name: `/${$app.name}/${$app.stage}/convex/url`,
+      type: "String",
+      value: `https://${convexDomain.api}`,
+    })
+
+    // The admin key is a different thing entirely — full read and write on
+    // every table plus function push, so a root credential for the deployment.
+    // It can only come from the running backend, so bootstrap.sh mints it a few
+    // minutes into the first boot and puts it here.
+    //
+    // Declared rather than left to bootstrap's put-parameter so it belongs to
+    // this stage's state and goes when the stage goes, and so the policy below
+    // names one ARN instead of a path wildcard. That means the value is written
+    // twice: this placeholder at create, then the real key at boot.
+    // ignoreChanges is what stops the next deploy putting the placeholder back.
+    const adminKeyParameter = new aws.ssm.Parameter(
+      "ConvexAdminKey",
+      {
+        name: `/${$app.name}/${$app.stage}/convex/admin-key`,
+        type: "SecureString",
+        value: "pending: bootstrap.sh writes this on first boot",
+      },
+      { ignoreChanges: ["value"] }
+    )
+
+    // ---- instance role ------------------------------------------------------
 
     const role = new aws.iam.Role("ConvexInstanceRole", {
       assumeRolePolicy: JSON.stringify({
@@ -364,21 +522,33 @@ export default $config({
       policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
     })
 
-    // Reads exactly one thing: the connection string userData fetches at boot.
-    const postgresUrlPolicy = new aws.iam.RolePolicy(
-      "ConvexInstancePostgresUrl",
-      {
-        role: role.name,
-        policy: postgresUrlParameter.arn.apply((arn) =>
-          JSON.stringify({
-            Version: "2012-10-17",
-            Statement: [
-              { Effect: "Allow", Action: "ssm:GetParameter", Resource: arn },
+    // Reads exactly the two parameters userData fetches at boot, and nothing
+    // else. Note this is the instance's own permission: the backend containers
+    // never reach SSM, they are handed the values as environment.
+    const parameterPolicy = new aws.iam.RolePolicy("ConvexInstanceParameters", {
+      role: role.name,
+      policy: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: "ssm:GetParameter",
+            Resource: [
+              postgresUrlParameter.arn,
+              storageEnvParameter.arn,
+              instanceSecretParameter.arn,
             ],
-          })
-        ),
-      }
-    )
+          },
+          {
+            // Write, and to the one parameter: the instance publishes the
+            // admin key it mints and never reads one back.
+            Effect: "Allow",
+            Action: "ssm:PutParameter",
+            Resource: adminKeyParameter.arn,
+          },
+        ],
+      },
+    })
 
     const instanceProfile = new aws.iam.InstanceProfile(
       "ConvexInstanceProfile",
@@ -417,9 +587,30 @@ chmod +x bootstrap.sh
 
 # The connection string lives in SSM, not in this script, since userData is
 # readable by anyone with ec2:DescribeInstanceAttribute. AL2023 ships the AWS
-# CLI, and the instance role allows exactly this one parameter.
+# CLI, and the instance role allows exactly the three parameters read here.
 POSTGRES_URL="$(aws ssm get-parameter --name '${postgresUrlParameter.name}' \\
   --with-decryption --query Parameter.Value --output text --region ${REGION})"
+
+# The backend's identity, by the same route and for the same reason. Constant
+# across every host this stage ever runs, which is what keeps admin keys valid
+# through a replacement.
+INSTANCE_SECRET="$(aws ssm get-parameter --name '${instanceSecretParameter.name}' \\
+  --with-decryption --query Parameter.Value --output text --region ${REGION})"
+
+# The S3 bucket names and credentials, for the same reason and by the same
+# route. Exported rather than listed on the command line below: bootstrap.sh
+# passes through whichever of its S3 variables are set, and which ones those
+# are is its business, not this script's. Removed once sourced, so the secret
+# is in one place on the box — the .env bootstrap.sh writes, mode 600.
+umask 077
+aws ssm get-parameter --name '${storageEnvParameter.name}' \\
+  --with-decryption --query Parameter.Value --output text --region ${REGION} \\
+  > storage.env
+set -a
+. ./storage.env
+set +a
+rm -f storage.env
+umask 022
 
 # USE_HTTPS because these are real hostnames with public DNS. Caddy takes a
 # Let's Encrypt certificate and redirects 80 to 443; a laptop run leaves it
@@ -435,6 +626,7 @@ POSTGRES_URL="$(aws ssm get-parameter --name '${postgresUrlParameter.name}' \\
 # with special:false, 32 alphanumerics. An explicit \`password\` on the
 # Postgres component could reintroduce characters that need more care.
 INSTANCE_NAME=${$app.stage} \\
+INSTANCE_SECRET="$INSTANCE_SECRET" \\
 POSTGRES_URL="$POSTGRES_URL" \\
 CONVEX_API_DOMAIN=${convexDomain.api} \\
 CONVEX_SITE_DOMAIN=${convexDomain.site} \\
@@ -443,10 +635,13 @@ USE_HTTPS=1 \\
 POSTGRES_CA_URL=https://truststore.pki.rds.amazonaws.com/${REGION}/${REGION}-bundle.pem \\
 CONVEX_IMAGE_TAG=${CONVEX_IMAGE_TAG} \\
 REPO_RAW_BASE=${SELF_HOSTED_CONVEX_REPO} \\
+REGION=${REGION} \\
+ADMIN_KEY_PARAMETER=${adminKeyParameter.name} \\
   ./bootstrap.sh
 
-# bootstrap.sh creates the database, brings the stack up, waits for the
-# backend to report healthy, and writes the admin key to $STACK_DIR/admin-key.
+# bootstrap.sh creates the database, brings the stack up, waits for the backend
+# to report healthy, and puts the admin key in SSM. ADMIN_KEY_PARAMETER is what
+# keeps it off the disk: unset, bootstrap.sh falls back to $STACK_DIR/admin-key.
 chown -R ec2-user:ec2-user "$STACK_DIR"
 `
 
@@ -482,9 +677,9 @@ chown -R ec2-user:ec2-user "$STACK_DIR"
         },
         tags: { Name: `${$app.name}-${$app.stage}-convex` },
       },
-      // The boot script's first AWS call is the parameter fetch; without this
-      // the instance can boot before its permission exists.
-      { dependsOn: [postgresUrlPolicy] }
+      // The boot script's first AWS calls are the parameter fetches; without
+      // this the instance can boot before its permission exists.
+      { dependsOn: [parameterPolicy] }
     )
 
     new aws.ec2.EipAssociation("ConvexEipAssociation", {
@@ -510,10 +705,76 @@ chown -R ec2-user:ec2-user "$STACK_DIR"
       )
     }
 
+    // ---- frontend ---------------------------------------------------------
+
+    // A streaming Lambda behind its own CloudFront distribution, on the apex
+    // for production and on the stage's subdomain otherwise — the same `domain`
+    // the Convex hostnames hang off. SST takes the ACM certificate in us-east-1
+    // and writes the alias record into the zone above.
+    //
+    // Needs Nitro's `aws-lambda` preset, which apps/web/vite.config.ts sets.
+    // `sst dev` never gets this far: the component returns a placeholder and
+    // runs the dev server below instead, so no distribution exists locally.
+    const web = new sst.aws.TanStackStart("Web", {
+      path: "apps/web",
+      domain,
+      // VITE_ variables are inlined into the client bundle at build time, so
+      // everything here ships to the browser. The Convex URL has to: the
+      // client opens the websocket itself. Never put a secret here.
+      environment: {
+        VITE_STAGE_NAME: $app.stage,
+        VITE_CONVEX_URL: $dev
+          ? CONVEX_LOCAL_URL
+          : `https://${convexDomain.api}`,
+      },
+      dev: {
+        title: "web",
+        command: "bun run dev",
+        url: "http://localhost:3000",
+      },
+    })
+
+    // ---- local development -------------------------------------------------
+
+    // `sst dev` is the whole environment: the compose stack at the repo root,
+    // `convex dev` pushing functions into it, and the Vite server above. SST
+    // skips DevCommands entirely on deploy.
+    //
+    // The local backend is given this stage's real buckets rather than a second
+    // set. Storage keys are rows in each backend's own Postgres, so the two
+    // write past each other rather than over each other; what they must not
+    // share is the database, and they do not — this one runs against the
+    // Postgres container.
+    const convexStack = new sst.x.DevCommand("Convex", {
+      dev: {
+        title: "convex stack",
+        command: "docker compose up",
+        autostart: true,
+      },
+      environment: storageEnvironment,
+    })
+
+    // The CLI cannot push until the backend answers, so this goes through a
+    // script that waits and mints the admin key on the first run. dependsOn
+    // orders the resources, not the processes.
+    new sst.x.DevCommand(
+      "ConvexFunctions",
+      {
+        dev: {
+          title: "convex dev",
+          command: "bun scripts/convex-dev.ts",
+          autostart: true,
+        },
+      },
+      { dependsOn: [convexStack] }
+    )
+
     return {
+      webUrl: web.url,
       convexUrl: `https://${convexDomain.api}`,
       convexSiteUrl: `https://${convexDomain.site}`,
       convexDashboardUrl: `https://${convexDomain.dashboard}`,
+      convexAdminKeyParameter: adminKeyParameter.name,
       instanceId: instance.id,
       publicIp: eip.publicIp,
       postgresHost: database.host,
