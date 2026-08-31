@@ -99,3 +99,10 @@ bun sst:remove                     # tear down
 Add a custom domain with `domain: "example.com"`, and AWS resources with
 `link: [...]` — linked resources are read in the app via
 `import { Resource } from "sst"`.
+
+## Removing a stage
+
+`production` is protected and retains its VPC, subnets and RDS instance;
+every other stage removes cleanly. What survives a removal, what a half-done
+teardown leaves behind, and the order that actually works are all in
+[docs/deployment-removal.md](docs/deployment-removal.md).
