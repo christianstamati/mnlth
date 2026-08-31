@@ -45,7 +45,7 @@ Everything else goes, including most of the VPC:
 | `ConvexSecurityGroup` | `aws:ec2:SecurityGroup` |
 | `ConvexEip`, `ConvexEipAssociation` | `aws:ec2:Eip`, `aws:ec2:EipAssociation` |
 | `ConvexInstanceRole` and its policies and profile | `aws:iam:*` |
-| `ConvexPostgresUrl`, `SharedVpcId` | `aws:ssm:Parameter` |
+| `ConvexPostgresUrl` | `aws:ssm:Parameter` |
 | `DatabaseProxySecret` (`mnlth-postgres-password`) and its version | `aws:secretsmanager:Secret` |
 | `DatabasePassword` | `random:index:RandomPassword` |
 | `ConvexApiRecord`, `ConvexSiteRecord`, `ConvexDashboardRecord` | `aws:route53:Record` |
@@ -65,13 +65,14 @@ The database keeps billing. `mnlth-postgres` is a `t4g.micro` with 20 GB of
 storage, and a retained instance runs until someone deletes it. VPCs and
 subnets are free, so the carcass itself costs nothing.
 
-The next production deploy will refuse to start. The retained VPC still carries
-its `sst:shared=mnlth` tag, and `sst.config.ts` throws when it finds a tagged
-VPC that the `/mnlth/shared/vpc-id` marker does not name. That marker is an SSM
-parameter, which is not on the retain list, so a retained removal always takes
-it and always leaves the VPC. The error names the stray id and tells you to
-delete it or import it. Recovering means deleting the VPC, its subnets and the
-RDS instance by hand, then deploying again.
+The carcass keeps the name. Production creates the shared VPC whether or not
+one is already there, so the next production deploy builds a second VPC named
+`mnlth-vpc` alongside the retained one. Production itself succeeds. Every other
+stage then fails on its next deploy, because `sst.aws.Vpc.get` resolves the VPC
+by `tag:Name` and `sst.config.ts` treats two matches as an error rather than
+picking one. The message names both ids. Recovering means deleting the carcass
+and its subnets by hand, along with the retained RDS instance if that stack is
+also being rebuilt.
 
 ## Other stages remove cleanly
 
