@@ -1,7 +1,5 @@
 /// <reference path="./.sst/platform/config.d.ts" />
 
-import { randomBytes } from "node:crypto"
-
 /**
  * A TanStack Start frontend on CloudFront and a self-hosted Convex backend on
  * one EC2 instance behind Caddy, backed by RDS Postgres and S3. One instance
@@ -432,6 +430,11 @@ export default $config({
     const eip = new aws.ec2.Eip("ConvexEip", { domain: "vpc" })
 
     // ---- the deployment's own credentials ----------------------------------
+
+    // Dynamic, and inside run(), because SST rejects a top-level import in this
+    // file outright: "Move imports inside the function they are used and do a
+    // dynamic import".
+    const { randomBytes } = await import("node:crypto")
 
     // The backend's identity. It mints admin keys from this and validates them
     // against it, so a key is only ever good for the instance secret and the
