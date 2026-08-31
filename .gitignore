@@ -20,3 +20,9 @@ todos.json
 # sst
 .sst
 sst-env.d.ts
+
+# the RDS certificate bundle is fetched at setup, not committed
+certs/*.pem
+
+# ...but the example env file is meant to be read
+!.env.example
