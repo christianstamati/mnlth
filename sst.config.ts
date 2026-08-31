@@ -2,7 +2,8 @@
 
 /**
  * Self-hosted Convex on a single EC2 instance, behind Caddy, backed by RDS
- * Postgres. One isolated copy per stage.
+ * Postgres. One instance and one database per stage; the VPC and the Postgres
+ * server are shared and owned by production — deploy that stage first.
  *
  *   bun sst deploy --stage production   ->  api.fullstackaws.dev
  *   bun sst deploy --stage dev          ->  api.dev.fullstackaws.dev
@@ -31,13 +32,16 @@ const COMPOSE_PLUGIN_VERSION = "v5.5.0"
 // The stack itself lives in its own repo. This instance fetches those two files
 // at boot and runs bootstrap.sh, so what boots here is the same thing that runs
 // on a laptop, and everything stage-specific is passed in as environment below.
-// Two consequences worth knowing: the repo has to stay public, since the curls
-// below carry no credentials, and a floating ref means a replaced instance
-// picks up whatever main says at that moment. Pin REPO_REF to a commit SHA for
-// a deployment that has to be reproducible.
-// Caddy's image tag is pinned inside that repo's docker-compose.yaml.
+// One consequence worth knowing: the repo has to stay public, since the curls
+// below carry no credentials.
+//
+// Production pins a commit, so a replaced instance boots the exact stack that
+// was tested rather than whatever main says at that moment; other stages float
+// on main for convenience. Caddy's image tag is pinned inside that repo's
+// docker-compose.yaml.
 const REPO = "christianstamati/self-hosted-convex"
 const REPO_REF = "main"
+const REPO_REF_PROD = "c67587deabe3a7083ff5891b08551b18ce31eaa7" // = main on 2026-08-31
 const STACK_DIR = "/home/ec2-user/convex-backend"
 
 export default $config({
@@ -46,9 +50,13 @@ export default $config({
       name: "mnlth",
       // Both guards lift together on the same escape hatch:
       //
+      //   SST_UNPROTECT=1 bun sst deploy --stage production
       //   SST_UNPROTECT=1 bun sst remove --stage production
       //
-      // Without it, production refuses removal outright (`protect`) and would
+      // The deploy first: the database also carries RDS-level
+      // deletionProtection (see the Postgres transform), which has to be
+      // switched off in AWS before anything can take the server away.
+      // Without the env var, production refuses removal outright (`protect`) and would
       // leave the database, VPC and subnets behind even if forced (`retain`
       // drops them from state without calling AWS). An env var rather than a
       // code change, so tearing down is deliberate but doesn't need a commit.
@@ -93,32 +101,32 @@ export default $config({
 
     // The VPC and the Postgres server are per-app, not per-stage: one server
     // holds every stage's database, since bootstrap.sh creates a database named
-    // after INSTANCE_NAME inside whatever server it is pointed at. The first
-    // deploy of any stage creates them, taking the ~10 minutes RDS needs; every
-    // later stage finds them by name and only adds its database. Both are
-    // looked up by their fixed names rather than passed between stages, because
-    // SST state is per-stage and cannot reference another stage's resources.
+    // after INSTANCE_NAME inside whatever server it is pointed at. Production
+    // owns both — it always constructs them — and every other stage only
+    // references them, because SST state is per-stage and cannot share
+    // resources directly.
     //
-    // Consequence worth knowing: whichever stage deploys first owns them in its
-    // state. The instance carries retainOnDelete so `sst remove` on that stage
-    // leaves the data behind — the next deploy of any stage adopts it again —
-    // but the VPC around it is not retained, so remove the owning stage last.
-    // `pulumi stack --stack <stage>` shows which one holds them.
+    // Ownership is fixed by stage rather than probed at deploy time. A
+    // does-it-exist probe reads nicely but flips the owning stage from `new`
+    // to `.get` on its own second deploy, and the two branches do not line up
+    // child-for-child (the ref branch registers the internet gateway under a
+    // different logical name, declares no route-table associations, and drops
+    // the Secrets Manager secret every stage reads the database password
+    // from), so Pulumi would start deleting live shared infrastructure.
+    //
+    // Deploy order follows: production first, taking the ~10 minutes RDS
+    // needs; other stages fail fast below until it exists. And since removing
+    // production takes the shared pieces away, remove the other stages first —
+    // production's own guards in app() already make its teardown deliberate.
     const sharedName = $app.name
     const sharedDatabaseId = `${$app.name}-postgres`
-
-    // getVpcs returns an empty list rather than throwing, so this is just a
-    // presence check. No NAT gateway: the backend sits in a public subnet with
-    // an Elastic IP, and nothing in the private subnets needs egress.
-    const existingVpcs = await aws.ec2.getVpcs({
-      filters: [{ name: "tag:sst:shared", values: [sharedName] }],
-    })
 
     // SST names resources `<app>-<stage>-<resource>` through a Name tag, but
     // only when the resource carries no tags of its own. Setting tags here
     // therefore does both jobs at once: it marks the VPC as shared for the
-    // lookup above, and it keeps the stage out of the name of something every
-    // stage will use. Merged rather than replaced, so nothing SST set is lost.
+    // lookup below, and it keeps the stage out of the name of something every
+    // stage will use. Merged rather than replaced, so nothing SST set is lost —
+    // Vpc.get refuses a VPC whose `sst:ref-version` tag went missing.
     type Taggable = {
       tags?: $util.Input<Record<string, $util.Input<string>>>
     }
@@ -133,37 +141,39 @@ export default $config({
         }
       }
 
-    const vpc =
-      existingVpcs.ids.length > 0
-        ? sst.aws.Vpc.get("Vpc", existingVpcs.ids[0])
-        : new sst.aws.Vpc("Vpc", {
-            transform: {
-              vpc: sharedTag(sharedName),
-              internetGateway: sharedTag(`${sharedName}-igw`),
-              securityGroup: sharedTag(sharedName),
-              publicSubnet: sharedTag(`${sharedName}-public`),
-              privateSubnet: sharedTag(`${sharedName}-private`),
-              publicRouteTable: sharedTag(`${sharedName}-public`),
-              privateRouteTable: sharedTag(`${sharedName}-private`),
-            },
-          })
-
-    // getInstance throws when the identifier does not exist, which is the only
-    // way to ask. Pulumi reports that as "couldn't find resource" rather than
-    // surfacing the DBInstanceNotFound code, so match both. Anything else is a
-    // real error — no credentials, no permission — and must not be swallowed
-    // into silently building a second server.
-    const existingDatabase = await aws.rds
-      .getInstance({ dbInstanceIdentifier: sharedDatabaseId })
-      .catch((err) => {
-        const message = `${err}`
-        if (
-          message.includes("couldn't find resource") ||
-          message.includes("DBInstanceNotFound")
+    // No NAT gateway: the backend sits in a public subnet with an Elastic IP,
+    // and nothing in the private subnets needs egress.
+    //
+    // Subnet and route-table Names keep "Public"/"Private" capitalised because
+    // Vpc.get finds the subnets again through a case-sensitive
+    // `tag:Name = *Public*` filter — a lowercase rename hands every
+    // non-production stage an empty subnet list.
+    const vpc = isProd
+      ? new sst.aws.Vpc("Vpc", {
+          transform: {
+            vpc: sharedTag(sharedName),
+            internetGateway: sharedTag(`${sharedName}-igw`),
+            securityGroup: sharedTag(sharedName),
+            publicSubnet: sharedTag(`${sharedName}-Public`),
+            privateSubnet: sharedTag(`${sharedName}-Private`),
+            publicRouteTable: sharedTag(`${sharedName}-Public`),
+            privateRouteTable: sharedTag(`${sharedName}-Private`),
+          },
+        })
+      : sst.aws.Vpc.get(
+          "Vpc",
+          await aws.ec2
+            .getVpcs({
+              filters: [{ name: "tag:sst:shared", values: [sharedName] }],
+            })
+            .then(({ ids }) => {
+              if (ids.length === 0)
+                throw new Error(
+                  `No VPC tagged sst:shared=${sharedName} found — deploy the production stage first.`
+                )
+              return ids[0]
+            })
         )
-          return undefined
-        throw err
-      })
 
     // Plain rds.Instance, not Aurora. `database` is just what RDS initialises
     // the server with; the databases that matter are the per-stage ones
@@ -173,9 +183,13 @@ export default $config({
     // Every stage's instance reaches this through the VPC's default security
     // group, which allows the whole 10.0.0.0/16 — the EC2 boxes carry their own
     // security group and are not otherwise members of it.
-    const database = existingDatabase
-      ? sst.aws.Postgres.get("Database", { id: sharedDatabaseId })
-      : new sst.aws.Postgres("Database", {
+    //
+    // The `.get` side recovers the password through the Secrets Manager secret
+    // production tagged onto the instance, so a missing server surfaces there
+    // as Pulumi's "couldn't find resource" — it means production has not been
+    // deployed yet.
+    const database = isProd
+      ? new sst.aws.Postgres("Database", {
           vpc,
           database: "shared",
           instance: "t4g.micro",
@@ -188,16 +202,36 @@ export default $config({
           transform: {
             // Function form, because retainOnDelete is a resource option
             // rather than an InstanceArgs field. Shared data outlives the
-            // stage that happened to create it.
+            // stack twice over: retainOnDelete keeps `sst remove` from
+            // touching the server, and deletionProtection makes RDS itself
+            // refuse deletion from the console or CLI. The latter rides the
+            // same SST_UNPROTECT escape hatch as the guards in app(), but it
+            // lives in AWS, which is why a real teardown deploys once with the
+            // var set before removing.
             instance: (args, opts) => {
               args.identifier = sharedDatabaseId
+              args.deletionProtection = process.env.SST_UNPROTECT !== "1"
               opts.retainOnDelete = true
             },
           },
         })
+      : sst.aws.Postgres.get("Database", { id: sharedDatabaseId })
 
     // No database name and no query params — the backend appends its own.
     const postgresUrl = $interpolate`postgresql://${database.username}:${database.password}@${database.host}:${database.port}`
+
+    // The connection string never rides in userData — anyone with
+    // ec2:DescribeInstanceAttribute can read that, and this is the master
+    // password to every stage's data. It sits in SSM instead and the instance
+    // fetches it at boot. SecureString under the account's default aws/ssm
+    // key, which SSM decrypts for any principal allowed ssm:GetParameter, so
+    // no KMS grant is needed. Per-stage parameter even though the value is the
+    // same everywhere, so removing a stage only takes its own copy.
+    const postgresUrlParameter = new aws.ssm.Parameter("ConvexPostgresUrl", {
+      name: `/${$app.name}/${$app.stage}/convex/postgres-url`,
+      type: "SecureString",
+      value: postgresUrl,
+    })
 
     // ---- instance ---------------------------------------------------------
 
@@ -284,19 +318,32 @@ export default $config({
       policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
     })
 
+    // Reads exactly one thing: the connection string userData fetches at boot.
+    const postgresUrlPolicy = new aws.iam.RolePolicy(
+      "ConvexInstancePostgresUrl",
+      {
+        role: role.name,
+        policy: postgresUrlParameter.arn.apply((arn) =>
+          JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+              { Effect: "Allow", Action: "ssm:GetParameter", Resource: arn },
+            ],
+          })
+        ),
+      }
+    )
+
     const instanceProfile = new aws.iam.InstanceProfile(
       "ConvexInstanceProfile",
       { role: role.name }
     )
 
-    // The Postgres password is interpolated into userData, which anyone with
-    // ec2:DescribeInstanceAttribute can read. Move it to SSM Parameter Store
-    // and fetch it at boot if that matters.
-    const rawBase = `https://raw.githubusercontent.com/${REPO}/${REPO_REF}`
+    const rawBase = `https://raw.githubusercontent.com/${REPO}/${isProd ? REPO_REF_PROD : REPO_REF}`
 
     const userData = $interpolate`#!/bin/bash
-# No -x: userData is echoed to the cloud-init log, and this passes the database
-# password to bootstrap.sh.
+# No -x: this script handles the database password once it is fetched, and
+# userData plus everything it echoes lands in the cloud-init log.
 set -euo pipefail
 
 # The AMI lookup above is \`mostRecent\`, so base packages are already current at
@@ -324,6 +371,12 @@ for f in bootstrap.sh docker-compose.yaml; do
 done
 chmod +x bootstrap.sh
 
+# The connection string lives in SSM, not in this script — userData is readable
+# by anyone with ec2:DescribeInstanceAttribute. AL2023 ships the AWS CLI, and
+# the instance role allows exactly this one parameter.
+POSTGRES_URL="$(aws ssm get-parameter --name '${postgresUrlParameter.name}' \\
+  --with-decryption --query Parameter.Value --output text --region ${REGION})"
+
 # USE_HTTPS because these are real hostnames with public DNS: Caddy takes a
 # certificate from Let's Encrypt and redirects 80 to 443. A laptop run leaves it
 # unset and gets plain HTTP on *.localhost.
@@ -335,11 +388,12 @@ chmod +x bootstrap.sh
 # optional, not unverified, so it only helps against a server offering none.
 # The bundle is per-region, which is why it is a URL rather than committed.
 #
-# POSTGRES_URL is single-quoted: SST generates the password with special:false,
-# so it is 32 alphanumerics and safe here. Passing an explicit \`password\` to
-# the Postgres component above could reintroduce a quote and break this line.
+# POSTGRES_URL expands from the fetch above; double quotes are enough because
+# SST generates the password with special:false, so it is 32 alphanumerics.
+# Passing an explicit \`password\` to the Postgres component above could
+# reintroduce characters that need more care here.
 INSTANCE_NAME=${$app.stage} \\
-POSTGRES_URL='${postgresUrl}' \\
+POSTGRES_URL="$POSTGRES_URL" \\
 CONVEX_API_DOMAIN=${convexDomain.api} \\
 CONVEX_SITE_DOMAIN=${convexDomain.site} \\
 CONVEX_DASHBOARD_DOMAIN=${convexDomain.dashboard} \\
@@ -354,27 +408,43 @@ REPO_RAW_BASE=${rawBase} \\
 chown -R ec2-user:ec2-user ${STACK_DIR}
 `
 
-    const instance = new aws.ec2.Instance("ConvexInstance", {
-      ami: ami.id,
-      instanceType: "t4g.small",
-      // publicSubnets is an Output<string[]>; the first is enough for a
-      // single-instance backend.
-      subnetId: vpc.publicSubnets.apply((subnets) => subnets[0]),
-      vpcSecurityGroupIds: [securityGroup.id],
-      iamInstanceProfile: instanceProfile.name,
-      // Needed before the Elastic IP is associated, or the instance has no
-      // route out and every curl in userData hangs.
-      associatePublicIpAddress: true,
-      rootBlockDevice: {
-        // The 8 GiB default fills up once the Convex images land.
-        volumeSize: 20,
-        volumeType: "gp3",
+    const instance = new aws.ec2.Instance(
+      "ConvexInstance",
+      {
+        ami: ami.id,
+        instanceType: "t4g.small",
+        // publicSubnets is an Output<string[]>; the first is enough for a
+        // single-instance backend.
+        subnetId: vpc.publicSubnets.apply((subnets) => subnets[0]),
+        vpcSecurityGroupIds: [securityGroup.id],
+        iamInstanceProfile: instanceProfile.name,
+        // Needed before the Elastic IP is associated, or the instance has no
+        // route out and every curl in userData hangs.
+        associatePublicIpAddress: true,
+        rootBlockDevice: {
+          // The 8 GiB default fills up once the Convex images land.
+          volumeSize: 20,
+          volumeType: "gp3",
+        },
+        userData,
+        // Editing userData should rebuild the box, not silently do nothing.
+        userDataReplaceOnChange: true,
+        // Convex actions run app code that can fetch arbitrary URLs from this
+        // box, and 169.254.169.254 would hand over the instance role's
+        // credentials. Requiring IMDSv2 with a hop limit of 1 cuts the
+        // containers off — the docker bridge costs them the one allowed hop —
+        // while the host itself (the aws CLI call above included) still
+        // reaches IMDS fine.
+        metadataOptions: {
+          httpTokens: "required",
+          httpPutResponseHopLimit: 1,
+        },
+        tags: { Name: `${$app.name}-${$app.stage}-convex` },
       },
-      userData,
-      // Editing userData should rebuild the box, not silently do nothing.
-      userDataReplaceOnChange: true,
-      tags: { Name: `${$app.name}-${$app.stage}-convex` },
-    })
+      // The boot script's first call against AWS is the parameter fetch;
+      // without this the instance can boot before its permission exists.
+      { dependsOn: [postgresUrlPolicy] }
+    )
 
     new aws.ec2.EipAssociation("ConvexEipAssociation", {
       instanceId: instance.id,
