@@ -8,7 +8,7 @@ export default $config({
     return {
       name: "mnlth",
       removal: input?.stage === "production" ? "retain" : "remove",
-      protect: input?.stage === "production",
+      protect: ["production"].includes(input?.stage),
       home: "aws",
       providers: {
         aws: {
