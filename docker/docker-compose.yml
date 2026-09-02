@@ -1,3 +1,7 @@
+# Project name, so containers, network and volume are convex-* wherever this
+# file runs, instead of being named after the directory it sits in.
+name: convex
+
 services:
   backend:
     image: ghcr.io/get-convex/convex-backend:latest
