@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "build": "turbo build",
-    "dev": "bun scripts/dev.ts",
+    "dev": "turbo dev",
+    "down": "docker compose -f docker/docker-compose.yml down",
+    "reset": "docker compose -f docker/docker-compose.yml down -v",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check --write .",

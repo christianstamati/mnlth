@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "up": "bun ../../scripts/backend-up.ts",
     "dev": "convex dev",
     "deploy": "convex deploy",
     "dashboard": "convex dashboard",

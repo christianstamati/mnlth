@@ -11,7 +11,11 @@
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
+    "up": {
+      "cache": false
+    },
     "dev": {
+      "dependsOn": ["@workspace/backend#up"],
       "cache": false,
       "persistent": true
     }

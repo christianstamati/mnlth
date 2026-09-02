@@ -70,7 +70,7 @@ infra/shared.ts            production publishes shared ids to SSM; other stages 
 infra/settings.ts          loads and validates sst.settings.json
 docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
-scripts/dev.ts           the whole app on this machine, no AWS
+scripts/backend-up.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
 ```
@@ -82,17 +82,19 @@ sst.config.ts              the app; sst.settings.json holds domain, region and p
 ```bash
 bun install
 bun dev            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
-bun dev --reset    # wipe the local database and files first
-bun dev --down     # stop the containers
+bun run down       # stop the containers
+bun run reset      # stop them and wipe the local database and files
 ```
 
-`scripts/dev.ts` starts `docker/docker-compose.yml` with a generated
-`INSTANCE_SECRET` kept in `docker/.env` (gitignored, so the admin key stays
-valid across restarts), mints an admin key into `packages/backend/.env.local`
-for the Convex CLI, then runs `turbo dev` with
-`VITE_CONVEX_URL=http://127.0.0.1:3210`: one TUI pane for `convex dev`, one
-for Vite, switch with the arrow keys. The dashboard is at
-http://127.0.0.1:6791 and asks for that key on first open.
+`bun dev` is `turbo dev`. Every `dev` task depends on the backend package's
+`up` task (`turbo.json`), which runs `scripts/backend-up.ts`: it starts
+`docker/docker-compose.yml` with a generated `INSTANCE_SECRET` kept in
+`docker/.env` (gitignored, so the admin key stays valid across restarts),
+mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
+writes `VITE_CONVEX_URL=http://127.0.0.1:3210` to `apps/web/.env.local`.
+Turbo then runs `convex dev` and Vite, one TUI pane each; switch with the
+arrow keys. The dashboard is at http://127.0.0.1:6791 and asks for that key
+on first open.
 
 ### A personal stage in AWS
 
