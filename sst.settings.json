@@ -3,7 +3,6 @@
   "region": "eu-central-1",
   "protect": [],
   "removal": {
-    "production": "remove",
     "*": "remove"
   },
   "database": {
@@ -11,5 +10,8 @@
   },
   "storage": {
     "*": "volume"
+  },
+  "stages": {
+    "main": "production"
   }
 }

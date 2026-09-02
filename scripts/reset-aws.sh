@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# teardown-infra.sh — delete every resource in one AWS region.
+# reset-aws.sh — delete every resource in one AWS region.
 #
-#   ./scripts/teardown-infra.sh --region eu-central-1 --dry-run
-#   ./scripts/teardown-infra.sh --region eu-central-1
+#   bun reset:aws --dry-run          # region from sst.settings.json
+#   bun reset:aws
+#   ./scripts/reset-aws.sh --region eu-central-1
 #
 # Written for this app's teardowns, where `sst remove` reports resources as
 # "Deleted" that are still live (its retain list covers the VPC, subnets and
@@ -35,7 +36,7 @@ usage() {
   cat <<'USAGE'
 
 Options:
-  -r, --region REGION     Region to empty. Required.
+  -r, --region REGION     Region to empty. Defaults to sst.settings.json's.
   -p, --profile PROFILE   AWS profile. Defaults to the environment's.
   -y, --yes               Skip the typed confirmation.
       --dry-run           Print the inventory and what would be deleted, then stop.
@@ -59,7 +60,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$REGION" ] || { echo "--region is required" >&2; usage >&2; exit 2; }
+if [ -z "$REGION" ]; then
+  SETTINGS="$(dirname "$0")/../sst.settings.json"
+  REGION="$(sed -n 's/.*"region": *"\([^"]*\)".*/\1/p' "$SETTINGS" 2>/dev/null | head -1)"
+  [ -n "$REGION" ] || { echo "--region is required (no region in $SETTINGS)" >&2; usage >&2; exit 2; }
+fi
 command -v aws >/dev/null || { echo "aws cli not found" >&2; exit 1; }
 
 export AWS_REGION="$REGION"

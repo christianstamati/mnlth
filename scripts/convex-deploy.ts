@@ -22,7 +22,9 @@ const POLL_SECONDS = 15
 const args = process.argv.slice(2)
 const stage = args[args.indexOf("--stage") + 1]
 if (!args.includes("--stage") || !stage || stage.startsWith("--")) {
-  console.error("usage: bun scripts/convex-deploy.ts --stage <stage> [--wait] [--dev]")
+  console.error(
+    "usage: bun scripts/convex-deploy.ts --stage <stage> [--wait] [--dev]"
+  )
   process.exit(2)
 }
 const wait = args.includes("--wait")
@@ -61,10 +63,14 @@ if (adminKey === PENDING) {
     process.exit(1)
   }
   const deadline = Date.now() + WAIT_SECONDS * 1000
-  process.stderr.write(`Waiting for ${stage}'s backend to publish its admin key`)
+  process.stderr.write(
+    `Waiting for ${stage}'s backend to publish its admin key`
+  )
   while (adminKey === PENDING) {
     if (Date.now() > deadline) {
-      console.error(`\nGave up after ${WAIT_SECONDS / 60} minutes. Check the instance's cloud-init log.`)
+      console.error(
+        `\nGave up after ${WAIT_SECONDS / 60} minutes. Check the instance's cloud-init log.`
+      )
       process.exit(1)
     }
     await Bun.sleep(POLL_SECONDS * 1000)
@@ -74,7 +80,9 @@ if (adminKey === PENDING) {
   process.stderr.write("\n")
 }
 
-console.error(`${dev ? "Watching" : "Deploying"} packages/backend/convex -> ${url}`)
+console.error(
+  `${dev ? "Watching" : "Deploying"} packages/backend/convex -> ${url}`
+)
 
 const env = {
   ...process.env,

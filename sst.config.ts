@@ -14,7 +14,13 @@ export default $config({
   async app(input) {
     // Domain, region and the per-stage lifecycle policy live in
     // `sst.settings.json`. SST forbids top-level imports in this file.
-    const { isProtected, removalFor, settings } = await import("./infra/settings")
+    const { checkStageName, isProtected, removalFor, settings } = await import(
+      "./infra/settings"
+    )
+
+    // Fail here, not minutes later inside Route 53. Branch names never reach
+    // a deploy unmapped, but a manual dispatch could.
+    checkStageName(input.stage)
 
     return {
       name: "mnlth",
@@ -37,7 +43,9 @@ export default $config({
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
-    const { settings, storageFor, databaseFor } = await import("./infra/settings")
+    const { settings, storageFor, databaseFor } = await import(
+      "./infra/settings"
+    )
 
     const isProd = $app.stage === "production"
     const domain = settings.domain
@@ -76,7 +84,10 @@ export default $config({
     } else {
       const shared = await readSharedIds()
       vpc = sst.aws.Vpc.get("Vpc", shared.vpcId)
-      certificateBucket = sst.aws.Bucket.get("Certificates", shared.certificateBucket)
+      certificateBucket = sst.aws.Bucket.get(
+        "Certificates",
+        shared.certificateBucket
+      )
       router = sst.aws.Router.get("Router", shared.routerDistributionId)
     }
 

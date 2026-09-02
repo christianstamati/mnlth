@@ -26,7 +26,17 @@ export interface SstSettings {
   storage: PerStage<Storage>
   /** Where the Convex backend keeps its tables: SQLite on the volume or RDS. */
   database: PerStage<Database>
+  /**
+   * Which git branches deploy, and to which stage. Read by the GitHub
+   * workflows (`deploy-branch.yml`), so adding a developer or an environment
+   * is one line here. Pull requests always deploy to `pr-<number>` and need
+   * no entry.
+   */
+  stages: Record<string, string>
 }
+
+/** What a stage may be called: it becomes a hostname label and a resource prefix. */
+export const STAGE_NAME = /^[a-z0-9][a-z0-9-]{0,23}$/
 
 /** What `sst.settings.json` gets for every key it leaves out. */
 export const DEFAULTS: Omit<SstSettings, "domain" | "region"> = {
@@ -34,6 +44,7 @@ export const DEFAULTS: Omit<SstSettings, "domain" | "region"> = {
   removal: { production: "retain", "*": "remove" },
   storage: { production: "s3", "*": "volume" },
   database: { production: "mysql", "*": "sqlite" },
+  stages: { main: "production" },
 }
 
 const REMOVALS: Removal[] = ["remove", "retain", "retain-all"]
@@ -44,15 +55,23 @@ function check(data: unknown): SstSettings {
   const d = data as Partial<SstSettings>
   if (typeof d.domain !== "string" || !d.domain) fail("domain", "a hostname")
   if (typeof d.region !== "string" || !d.region) fail("region", "an AWS region")
-  if (d.protect !== undefined && (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string")))
+  if (
+    d.protect !== undefined &&
+    (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string"))
+  )
     fail("protect", "a list of stage names")
   checkPerStage("removal", d.removal, REMOVALS)
   checkPerStage("storage", d.storage, STORAGES)
   checkPerStage("database", d.database, DATABASES)
+  checkStages(d.stages)
   return { ...DEFAULTS, ...d } as SstSettings
 }
 
-function checkPerStage<T extends string>(key: string, value: unknown, allowed: T[]) {
+function checkPerStage<T extends string>(
+  key: string,
+  value: unknown,
+  allowed: T[]
+) {
   const expected = allowed.join(" | ")
   if (value === undefined) return
   if (typeof value === "string") {
@@ -63,6 +82,17 @@ function checkPerStage<T extends string>(key: string, value: unknown, allowed: T
   } else {
     fail(key, `${expected} or a map of stage to one of those`)
   }
+}
+
+function checkStages(value: unknown) {
+  if (value === undefined) return
+  if (!value || typeof value !== "object")
+    fail("stages", "a map of branch name to stage name")
+  for (const [branch, stage] of Object.entries(
+    value as Record<string, unknown>
+  ))
+    if (typeof stage !== "string" || !STAGE_NAME.test(stage))
+      fail(`stages.${branch}`, `a stage name matching ${STAGE_NAME}`)
 }
 
 function fail(key: string, expected: string): never {
@@ -76,6 +106,15 @@ export function forStage<T>(value: PerStage<T>, stage: string, fallback: T): T {
   if (typeof value !== "object" || value === null) return value as T
   const map = value as Record<string, T>
   return map[stage] ?? map["*"] ?? fallback
+}
+
+/** Refuse a stage name that cannot be a hostname label or a resource prefix. */
+export function checkStageName(stage: string) {
+  if (!STAGE_NAME.test(stage))
+    throw new Error(
+      `Stage "${stage}" must be lowercase letters, digits and hyphens, at most 24 characters: ` +
+        "it becomes a hostname label and a resource prefix."
+    )
 }
 
 /** Whether `stage` is protected from deletion. */

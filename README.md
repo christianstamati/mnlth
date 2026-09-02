@@ -22,17 +22,37 @@ import { Button } from "@workspace/ui/components/button";
 
 ## Local development
 
+Two loops. The first needs Docker and nothing else; the second needs AWS
+credentials and gives you a personal stage in the cloud.
+
+### Docker only
+
 ```bash
-bun sst dev --stage <stage>
+bun local            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
+bun local --reset    # wipe the local database and files first
+bun local --down     # stop the containers
+```
+
+`scripts/local.ts` brings up `docker/docker-compose.yml`, the same stack the
+EC2 instances run, with a generated `INSTANCE_SECRET` kept in `docker/.env`
+(gitignored, so the admin key stays valid across restarts). It mints an admin
+key, writes it to `packages/backend/.env.local` for the Convex CLI, then runs
+`convex dev` and Vite with `VITE_CONVEX_URL=http://127.0.0.1:3210`. The
+dashboard is at http://127.0.0.1:6791 and asks for that key on first open.
+
+### A personal stage in AWS
+
+```bash
+bun sst dev --stage <you>
 ```
 
 `sst dev` deploys the stage (its EC2 backend included, so the first run takes
 a few minutes) and then runs Vite on http://localhost:3000 with
-`VITE_CONVEX_URL` set to the stage's backend. Nothing runs in Docker locally:
-the app in the browser talks to the stage's deployed Convex backend, the same
-one `bun sst deploy` serves at `<stage>.<domain>`. Push function changes with
-`bun convex:deploy --stage <stage>` (see below), or run
-`bun convex:deploy --stage <stage> --dev` alongside to push on every save.
+`VITE_CONVEX_URL` set to the stage's backend. Push function changes with
+`bun convex:deploy --stage <you>` (see below), or run
+`bun convex:deploy --stage <you> --dev` alongside to push on every save. Only
+point `sst dev` at your own stage, never at `staging` or `production`: it
+leaves dev-mode resources behind until the next `sst deploy`.
 
 Backend functions live in `packages/backend/convex` and reach the web app as
 generated types:
@@ -44,19 +64,62 @@ import { useQuery } from "convex/react"
 const messages = useQuery(api.chat.getMessages)
 ```
 
-The client reads `VITE_CONVEX_URL`, which `sst.config.ts` sets to the local
-backend in dev and to `https://api.<stage domain>` on a deployed stage. Running
-`bun dev` (plain Vite, no SST) skips that injection, so export it yourself or
-use `bun sst:dev`.
+The client reads `VITE_CONVEX_URL`, which `sst.config.ts` sets to the stage's
+backend and `bun local` sets to the container. Running `bun dev` (plain Vite)
+skips that injection, so export it yourself.
 
-Local development also gets the stage's real S3 buckets for Convex storage, so
-uploaded files land in S3 rather than in the container. The local and deployed
-backends share buckets but not databases, which means they write past each other
-rather than over each other.
+## Deploying
 
-## Deploying (SST)
+Git drives every deployment. GitHub Actions assumes the `github-actions-sst`
+IAM role through OIDC (no stored keys), runs biome and typecheck, then
+`sst deploy` and the Convex functions push.
 
-Two things ship per stage, both under the domain in `sst.settings.json`:
+| Git event | Stage | Web | Convex | Lifetime |
+| --- | --- | --- | --- | --- |
+| push to `main` | `production` | `fullstackaws.dev` | `api.fullstackaws.dev` | permanent, protected |
+| push to a branch listed under `stages` | that stage | `<stage>.fullstackaws.dev` | `<stage>-api.fullstackaws.dev` | until removed |
+| pull request #N | `pr-N` | `pr-N.fullstackaws.dev` | `pr-N-api.fullstackaws.dev` | removed when the PR closes |
+| any other branch | none | lint and typecheck only | | |
+
+Which branches deploy is the `stages` map in `sst.settings.json`. Adding a
+developer or an environment is one line there:
+
+```json
+"stages": { "main": "production", "staging": "staging", "christianstamati": "christianstamati" }
+```
+
+Pull requests from forks and draft pull requests are not deployed. A PR gets a
+comment with its URLs after each deploy. The first deploy of a new stage takes
+ten to twenty-five minutes (the box boots, pulls images, mints its admin key);
+later pushes take a few.
+
+The workflows, all in `.github/workflows`:
+
+| File | Runs on | Does |
+| --- | --- | --- |
+| `ci.yml` | every push and PR | biome, typecheck |
+| `deploy.yml` | called by the others | the one deploy job |
+| `deploy-branch.yml` | push | maps the branch through `stages`, deploys |
+| `deploy-pr.yml` | PR opened, pushed, reopened, ready for review | deploys `pr-N`, comments |
+| `remove-pr.yml` | PR closed | `sst remove --stage pr-N`, drops its state |
+| `manual.yml` | Actions tab | `deploy`, `remove`, `unlock` or `refresh` any stage |
+
+`unlock` is for a job that died mid-deploy and left the state lock behind;
+`refresh` for after something was changed by hand in AWS.
+
+### From a laptop
+
+Every stage can also be deployed by hand with the same commands CI runs:
+
+```bash
+bun sst deploy --stage production   # first run takes ~10 min
+bun convex:deploy --stage production --wait
+bun sst remove --stage <stage>      # tear down; production refuses
+```
+
+### What ships
+
+Two things per stage, both under the domain in `sst.settings.json`:
 
 | | Hostname | What runs |
 | --- | --- | --- |
@@ -68,20 +131,22 @@ The frontend needs Nitro's `aws-lambda` preset, set in `apps/web/vite.config.ts`
 Production owns the shared VPC, the certificate bucket and the CloudFront
 distribution (an `sst.aws.Router` with a `*.<domain>` alias, which is how every
 other stage gets its own subdomain without a distribution of its own). It
-publishes their ids to SSM, so it deploys first and is removed last:
+publishes their ids to SSM, so it deploys first and is removed last. No preview
+or branch stage can build until production exists.
 
-```bash
-bun sst:dev                          # sst dev — app on http://localhost:3000
-bunx sst deploy --stage production   # first run takes ~10 min; RDS is the slow part
-bunx sst deploy --stage dev
-bun sst:remove                       # tear down
-```
+### SST Console
+
+The [SST Console](https://console.sst.dev) reads state straight from the
+`sst-state-*` bucket, so it lists every stage whoever deployed it, with its
+outputs, the web Lambda's logs and its uncaught errors. Connect the AWS
+account there once (it installs a CloudFormation stack with a read role) and
+pick `eu-central-1`. Autodeploy stays off; GitHub Actions is the deploy engine.
 
 ### Deployment settings
 
 `sst.settings.json` holds what varies per deployment but not per stage: the base
-domain, the region, and per-stage choices. Only `domain` and `region` are
-required; the rest default to what is shown here.
+domain, the region, per-stage choices, and which branches deploy. Only `domain`
+and `region` are required; the rest default to what is shown here.
 
 ```json
 {
@@ -90,9 +155,14 @@ required; the rest default to what is shown here.
   "protect": ["production"],
   "removal": { "production": "retain", "*": "remove" },
   "storage": { "production": "s3", "*": "volume" },
-  "database": { "production": "mysql", "*": "sqlite" }
+  "database": { "production": "mysql", "*": "sqlite" },
+  "stages": { "main": "production" }
 }
 ```
+
+Stage names must be lowercase letters, digits and hyphens, at most 24
+characters: they become hostname labels and resource prefixes, and
+`sst.config.ts` refuses anything else before touching AWS.
 
 `protect` lists stages whose resources refuse deletion; a deploy that must
 replace a resource on a protected stage fails, so leave it empty while a
@@ -239,7 +309,25 @@ functions or the dashboard.
 
 ## Removing a stage
 
-`production` is protected and retains its VPC, subnets and RDS instance;
-every other stage removes cleanly. What survives a removal, what a half-done
+`production` is protected; every other stage removes cleanly, and pull request
+stages remove themselves. What survives a removal, what a half-done
 teardown leaves behind, and the order that actually works are all in
 [docs/deployment-removal.md](docs/deployment-removal.md).
+
+## Resetting the AWS account
+
+When `sst remove` has left carcasses behind (it reports "Deleted" for VPCs
+and subnets it retained) or orphans no stage tracks, empty the whole region
+with the AWS CLI instead of SST state:
+
+```bash
+bun reset:aws --dry-run   # inventory of what would go; region from sst.settings.json
+bun reset:aws             # asks you to type the region name, then deletes
+```
+
+It keeps the `sst-state-*` / `sst-asset-*` buckets and `/sst/*` parameters
+(`--include-sst` takes them too, at the cost of every stage's state and
+passphrase) and the region's default VPC (`--include-default-vpc`). IAM,
+Route 53 and CloudFront are global, so it only reports them at the end.
+Run it with nothing you want to keep in the region: it deletes everything,
+not just this app.

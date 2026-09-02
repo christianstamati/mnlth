@@ -1,0 +1,49 @@
+# Every pull request from this repository gets its own stage, `pr-<number>`,
+# redeployed on each push and removed by remove-pr.yml when it closes.
+# Forks are skipped: they cannot assume the AWS role. Drafts are skipped
+# until marked ready, so a work-in-progress PR costs no EC2 box.
+name: deploy pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  deploy:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      github.actor != 'dependabot[bot]'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      stage: pr-${{ github.event.pull_request.number }}
+      environment: preview
+
+  comment:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: peter-evans/find-comment@v3
+        id: find
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: "Preview stage"
+      - uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.find.outputs.comment-id }}
+          edit-mode: replace
+          body: |
+            **Preview stage** `pr-${{ github.event.pull_request.number }}` at ${{ github.event.pull_request.head.sha }}
+
+            | | |
+            |---|---|
+            | Web | ${{ needs.deploy.outputs.web_url }} |
+            | Convex | ${{ needs.deploy.outputs.convex_url }} |
+            | Dashboard | ${{ needs.deploy.outputs.convex_dashboard_url }} |
+
+            Redeployed on every push. Removed when this pull request closes.
