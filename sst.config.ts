@@ -11,16 +11,6 @@
 const BASE_DOMAIN = "fullstackaws.dev"
 const REGION = "eu-central-1"
 
-// Production creates the VPC. Every other stage references it by this id,
-// pinned by hand after the first production deploy (it is in that deploy's
-// `vpcId` output). A constant, not a lookup: production's program never
-// changes shape between deploys, and no stage can pick up a stray VPC.
-const SHARED_VPC_ID = "vpc-0d792aa9449fef16d"
-
-// Same pattern for the bucket Caddy keeps the wildcard certificate in. The
-// name is in production's `certificateBucket` output.
-const SHARED_CERTIFICATE_BUCKET = ""
-
 export default $config({
   app(input) {
     return {
@@ -40,25 +30,37 @@ export default $config({
     // Infra files are imported dynamically, not at the top of the file: the
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
+    const { publishSharedIds, readSharedIds } = await import("./infra/shared")
 
     const isProd = $app.stage === "production"
 
-    if (!isProd && !(SHARED_VPC_ID && SHARED_CERTIFICATE_BUCKET))
-      throw new Error(
-        "SHARED_VPC_ID or SHARED_CERTIFICATE_BUCKET is empty. Deploy the production stage first, then pin its vpcId and certificateBucket outputs in sst.config.ts."
+    // Production creates the VPC and the certificate bucket and publishes
+    // their ids to SSM; every other stage reads them back from there. See
+    // `infra/shared.ts`.
+    let vpc: sst.aws.Vpc
+    let certificateBucket: sst.aws.Bucket
+
+    if (isProd) {
+      // Defaults: two AZs, public and private subnets, no NAT gateway. Free.
+      vpc = new sst.aws.Vpc("Vpc")
+
+      // Holds the `*.fullstackaws.dev` certificate and its private key. Not
+      // public, encrypted at rest by default, and only the instance roles
+      // touch it.
+      certificateBucket = new sst.aws.Bucket("Certificates")
+
+      publishSharedIds({
+        vpcId: vpc.id,
+        certificateBucket: certificateBucket.name,
+      })
+    } else {
+      const shared = await readSharedIds()
+      vpc = sst.aws.Vpc.get("Vpc", shared.vpcId)
+      certificateBucket = sst.aws.Bucket.get(
+        "Certificates",
+        shared.certificateBucket
       )
-
-    // Defaults: two AZs, public and private subnets, no NAT gateway. Free.
-    const vpc = isProd
-      ? new sst.aws.Vpc("Vpc")
-      : sst.aws.Vpc.get("Vpc", SHARED_VPC_ID)
-
-    // Holds the `*.fullstackaws.dev` certificate and its private key. Not
-    // public, encrypted at rest by default, and only the instance roles
-    // touch it.
-    const certificateBucket = isProd
-      ? new sst.aws.Bucket("Certificates")
-      : sst.aws.Bucket.get("Certificates", SHARED_CERTIFICATE_BUCKET)
+    }
 
     const convex = new ConvexBackend("Convex", {
       vpc,
@@ -66,7 +68,10 @@ export default $config({
       domain: BASE_DOMAIN,
       // Flat names, so one `*.fullstackaws.dev` certificate covers every stage.
       prefix: isProd ? "" : `${$app.stage}-`,
-      letsEncryptStaging: true,
+      // A stable address for production. Other stages follow the instance.
+      elasticIp: isProd,
+      // Defaults: SQLite and files on the root volume. Options are
+      // storage: "s3" and database: "postgres" | "mysql" | { engine, ... }.
     })
 
     return {

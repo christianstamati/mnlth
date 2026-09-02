@@ -6,8 +6,9 @@
  * What it builds, per stage:
  *
  *   - an arm64 Amazon Linux 2023 instance in a public subnet of the given VPC
- *   - an Elastic IP and three Route 53 A records pointing at it:
- *     `<prefix>api.<domain>`, `<prefix>site.<domain>`, `<prefix>dashboard.<domain>`
+ *   - three Route 53 A records, `<prefix>api.<domain>`, `<prefix>site.<domain>`
+ *     and `<prefix>dashboard.<domain>`, pointing at the instance's public
+ *     address or, with `elasticIp`, at an Elastic IP that survives replacement
  *   - a system-level Caddy that terminates TLS with one Let's Encrypt wildcard
  *     certificate for `*.<domain>` (DNS-01 via Route 53) and proxies each
  *     hostname to a loopback port. Caddy keeps the certificate in a shared S3
@@ -18,9 +19,10 @@
  *   - two SSM SecureString parameters: the instance secret (stable across
  *     host replacements, so admin keys keep working) and the admin key the
  *     backend mints for itself a few minutes into its first boot
- *
- * Data lives in SQLite inside the `data` docker volume on the root disk. No
- * Postgres, no S3: replacing the instance loses the deployment's data.
+ *   - optionally an RDS Postgres or MySQL database (`database`) and five S3
+ *     buckets for files, modules, exports and search indexes (`storage`).
+ *     With the defaults, SQLite and files live on the root volume and a
+ *     replaced instance starts empty.
  *
  * Usage:
  *
@@ -29,6 +31,9 @@
  *     certificateBucket,
  *     domain: "fullstackaws.dev",
  *     prefix: "dev-",
+ *     elasticIp: false,
+ *     storage: "s3",
+ *     database: { engine: "postgres", instance: "t4g.micro" },
  *   })
  *   // convex.url        -> https://dev-api.fullstackaws.dev
  *   // convex.adminKeyParameter -> SSM path of the admin key
@@ -39,6 +44,7 @@ import path from "node:path"
 
 const COMPOSE_PLUGIN_VERSION = "v5.5.0"
 const COMPOSE_FILE = "self-hosted-convex/docker-compose.yml"
+
 // The download API builds Caddy with plugins: Route 53 for the DNS-01
 // challenge and S3 for shared certificate storage.
 const CADDY_DOWNLOAD_URL =
@@ -52,10 +58,34 @@ const PORT = { api: 3210, site: 3211, dashboard: 6791 }
 // What the parameters hold until the instance writes the real values.
 const PENDING = "pending: written by the instance on first boot"
 
+// The five buckets the backend moves off the container volume when `storage`
+// is "s3", keyed by the environment variable the compose file forwards.
+// https://github.com/get-convex/convex-backend/blob/main/self-hosted/advanced/s3_storage.md
+const STORAGE_BUCKETS = {
+  S3_STORAGE_EXPORTS_BUCKET: "Exports",
+  S3_STORAGE_SNAPSHOT_IMPORTS_BUCKET: "SnapshotImports",
+  S3_STORAGE_MODULES_BUCKET: "Modules",
+  S3_STORAGE_FILES_BUCKET: "Files",
+  S3_STORAGE_SEARCH_BUCKET: "Search",
+} as const
+
+export type ConvexDatabaseEngine = "sqlite" | "postgres" | "mysql"
+
+/**
+ * A managed database. The object form takes the arguments of the matching
+ * SST component, minus `vpc` (the component's own) and `database` (the
+ * backend requires the name to match its instance name).
+ */
+export type ConvexDatabaseArgs =
+  | ConvexDatabaseEngine
+  | ({ engine: "postgres" } & Omit<sst.aws.PostgresArgs, "vpc" | "database">)
+  | ({ engine: "mysql" } & Omit<sst.aws.MysqlArgs, "vpc" | "database">)
+
 export interface ConvexBackendArgs {
   /**
    * The VPC to launch the instance in. The instance lands in the first public
-   * subnet, so the VPC needs at least one; no NAT gateway is required.
+   * subnet, so the VPC needs at least one; no NAT gateway is required. A
+   * managed database lands in the private subnets.
    */
   vpc: sst.aws.Vpc
   /**
@@ -74,12 +104,39 @@ export interface ConvexBackendArgs {
   /**
    * Prepended to each hostname, e.g. `dev-` gives `dev-api.<domain>`. Empty
    * for the apex names `api.<domain>`, `site.<domain>`, `dashboard.<domain>`.
-   *
-   * Every stage shares the one wildcard name, so Let's Encrypt's limit of 5
-   * duplicate certificates per week counts rebuilds of all stages together.
    * @default ""
    */
   prefix?: $util.Input<string>
+  /**
+   * Allocate an Elastic IP and point the DNS records at it, so the address
+   * survives an instance replacement. Without it the records follow the
+   * instance's own public address, which changes on every replacement and
+   * takes the records' 60 second TTL to settle.
+   * @default false
+   */
+  elasticIp?: boolean
+  /**
+   * Where the backend keeps files, function modules, snapshot exports and
+   * search indexes. `"volume"` is the docker volume on the root disk, lost
+   * with the instance. `"s3"` provisions five buckets that outlive it.
+   *
+   * Switching an existing deployment is a `convex export` then a
+   * `convex import --replace-all`, not a restart.
+   * @default "volume"
+   */
+  storage?: "volume" | "s3"
+  /**
+   * Where the backend keeps its tables. `"sqlite"` is a file in the docker
+   * volume on the root disk, lost with the instance. `"postgres"` or
+   * `"mysql"` provisions an RDS instance in the VPC's private subnets, which
+   * takes about ten minutes on first deploy. Pass an object to size it.
+   *
+   * Postgres connects over TLS, trusting the RDS certificate bundle. MySQL
+   * connects in the clear inside the VPC: the backend has no way to trust a
+   * custom CA for MySQL, and SST's parameter group does not require TLS.
+   * @default "sqlite"
+   */
+  database?: ConvexDatabaseArgs
   /**
    * EC2 instance type. Must be arm64 (Graviton): the AMI is arm64 and Convex
    * publishes linux/arm64 images.
@@ -87,14 +144,16 @@ export interface ConvexBackendArgs {
    */
   instanceType?: $util.Input<string>
   /**
-   * Root volume size in GiB. Holds the Docker images and the Convex data.
+   * Root volume size in GiB. Holds the Docker images and, with the default
+   * `storage` and `database`, all of the backend's data.
    * @default 30
    */
   volumeSize?: $util.Input<number>
   /**
    * Issue certificates from Let's Encrypt's staging CA. Browsers reject those,
    * but the production CA allows only 5 duplicate certificates per hostname
-   * per week, and every instance replacement issues three fresh ones.
+   * per week. With the shared certificate bucket this matters only when the
+   * bucket is empty or has been cleared.
    * @default false
    */
   letsEncryptStaging?: boolean
@@ -108,13 +167,22 @@ export interface ConvexBackendArgs {
 }
 
 export class ConvexBackend extends $util.ComponentResource {
-  private readonly _hosts: { api: $util.Output<string>; site: $util.Output<string>; dashboard: $util.Output<string> }
+  private readonly _hosts: {
+    api: $util.Output<string>
+    site: $util.Output<string>
+    dashboard: $util.Output<string>
+  }
   private readonly instance: aws.ec2.Instance
-  private readonly eip: aws.ec2.Eip
+  private readonly eip?: aws.ec2.Eip
   private readonly securityGroup: aws.ec2.SecurityGroup
   private readonly role: aws.iam.Role
   private readonly instanceSecretParameter: aws.ssm.Parameter
   private readonly _adminKeyParameter: aws.ssm.Parameter
+  private readonly database?: sst.aws.Postgres | sst.aws.Mysql
+  private readonly storageBuckets?: Record<
+    keyof typeof STORAGE_BUCKETS,
+    sst.aws.Bucket
+  >
   private readonly _instanceName: string
 
   constructor(
@@ -130,8 +198,10 @@ export class ConvexBackend extends $util.ComponentResource {
     const region = aws.getRegionOutput().region
 
     // What the backend identifies itself as. Admin keys are minted from and
-    // checked against this and the instance secret.
+    // checked against this and the instance secret, and a managed database
+    // is named after it with `-` swapped for `_`.
     this._instanceName = `${$app.name}-${$app.stage}`
+    const databaseName = this._instanceName.replace(/-/g, "_")
 
     this._hosts = {
       api: $interpolate`${prefix}api.${domain}`,
@@ -163,14 +233,20 @@ export class ConvexBackend extends $util.ComponentResource {
 
     // Allocated apart from the instance so the address survives a
     // replacement. The DNS records point here, not at the instance.
-    this.eip = new aws.ec2.Eip(`${name}Eip`, { domain: "vpc" }, { parent })
+    if (args.elasticIp) {
+      this.eip = new aws.ec2.Eip(`${name}Eip`, { domain: "vpc" }, { parent })
+    }
 
     // ---- parameters -------------------------------------------------------
 
-    // Both hold a placeholder at create and the real value once the instance
-    // writes it, so no secret ever passes through Pulumi state or userData.
-    // ignoreChanges stops the next deploy from putting the placeholder back.
+    // The instance reads everything secret from SSM at boot, so no secret
+    // passes through userData, which anyone with
+    // ec2:DescribeInstanceAttribute can read.
     const parameterPrefix = `/${$app.name}/${$app.stage}/convex`
+
+    // Both hold a placeholder at create and the real value once the instance
+    // writes it, so these two never pass through Pulumi state either.
+    // ignoreChanges stops the next deploy from putting the placeholder back.
 
     // Constant across every host this stage runs: generated by the first
     // instance, read back by every replacement. Deleting it invalidates every
@@ -189,6 +265,128 @@ export class ConvexBackend extends $util.ComponentResource {
       { name: `${parameterPrefix}/admin-key`, type: "SecureString", value: PENDING },
       { parent, ignoreChanges: ["value"] }
     )
+
+    // ---- database ---------------------------------------------------------
+
+    // Each holds a block of KEY=value lines the instance appends to the
+    // compose .env at boot.
+    const envParameters: aws.ssm.Parameter[] = []
+
+    const database =
+      typeof args.database === "string"
+        ? { engine: args.database }
+        : (args.database ?? { engine: "sqlite" as const })
+
+    if (database.engine !== "sqlite") {
+      const { engine, ...databaseArgs } = database
+
+      // RDS creates the database at launch, so the box needs no SQL client.
+      // The backend connects to the database named after INSTANCE_NAME.
+      this.database =
+        engine === "postgres"
+          ? new sst.aws.Postgres(
+              `${name}Database`,
+              { ...databaseArgs, vpc: args.vpc, database: databaseName },
+              { parent }
+            )
+          : new sst.aws.Mysql(
+              `${name}Database`,
+              { ...databaseArgs, vpc: args.vpc, database: databaseName },
+              { parent }
+            )
+
+      // No database name and no query params: the backend appends its own.
+      const url = $interpolate`${engine === "postgres" ? "postgresql" : "mysql"}://${this.database.username}:${this.database.password}@${this.database.host}:${this.database.port}`
+
+      // Postgres verifies the server certificate against PG_CA_FILE, which
+      // userData fills with the RDS bundle for this region. The MySQL client
+      // has no such hook, and SST's parameter group turns
+      // require_secure_transport off, so it connects in the clear.
+      const lines =
+        engine === "postgres"
+          ? [$interpolate`POSTGRES_URL=${url}`, "PG_CA_FILE=/convex/certs/rds-ca.pem"]
+          : [$interpolate`MYSQL_URL=${url}`, "DO_NOT_REQUIRE_SSL=1"]
+
+      envParameters.push(
+        new aws.ssm.Parameter(
+          `${name}DatabaseEnv`,
+          {
+            name: `${parameterPrefix}/database-env`,
+            type: "SecureString",
+            value: $util.all(lines).apply((lines) => lines.join("\n")),
+          },
+          { parent }
+        )
+      )
+    }
+
+    // ---- storage ----------------------------------------------------------
+
+    if (args.storage === "s3") {
+      this.storageBuckets = Object.fromEntries(
+        Object.entries(STORAGE_BUCKETS).map(([variable, suffix]) => [
+          variable,
+          new sst.aws.Bucket(`${name}${suffix}Bucket`, {}, { parent }),
+        ])
+      ) as Record<keyof typeof STORAGE_BUCKETS, sst.aws.Bucket>
+
+      // An access key, not the instance role: the hop limit on the instance
+      // cuts the containers off from IMDS, which is the point, and costs
+      // them the role. A user scoped to these five buckets is the smaller
+      // blast radius.
+      const storageUser = new aws.iam.User(`${name}StorageUser`, {}, { parent })
+
+      new aws.iam.UserPolicy(
+        `${name}StoragePolicy`,
+        {
+          user: storageUser.name,
+          policy: {
+            Version: "2012-10-17",
+            Statement: [
+              {
+                // The backend reads, writes and deletes. s3:* over five
+                // buckets it is the only principal for is narrower than it
+                // looks.
+                Effect: "Allow",
+                Action: ["s3:*"],
+                Resource: Object.values(this.storageBuckets).flatMap((bucket) => [
+                  bucket.arn,
+                  $interpolate`${bucket.arn}/*`,
+                ]),
+              },
+            ],
+          },
+        },
+        { parent }
+      )
+
+      const accessKey = new aws.iam.AccessKey(
+        `${name}StorageAccessKey`,
+        { user: storageUser.name },
+        { parent }
+      )
+
+      const lines = [
+        $interpolate`AWS_REGION=${region}`,
+        $interpolate`AWS_ACCESS_KEY_ID=${accessKey.id}`,
+        $interpolate`AWS_SECRET_ACCESS_KEY=${accessKey.secret}`,
+        ...Object.entries(this.storageBuckets).map(
+          ([variable, bucket]) => $interpolate`${variable}=${bucket.name}`
+        ),
+      ]
+
+      envParameters.push(
+        new aws.ssm.Parameter(
+          `${name}StorageEnv`,
+          {
+            name: `${parameterPrefix}/storage-env`,
+            type: "SecureString",
+            value: $util.all(lines).apply((lines) => lines.join("\n")),
+          },
+          { parent }
+        )
+      )
+    }
 
     // ---- instance role ----------------------------------------------------
 
@@ -221,9 +419,21 @@ export class ConvexBackend extends $util.ComponentResource {
           Version: "2012-10-17",
           Statement: [
             {
-              // userData reads the instance secret and writes both parameters.
+              // Exactly the parameters userData reads at boot. This is the
+              // instance's own permission; the containers never reach SSM,
+              // they are handed values.
               Effect: "Allow",
-              Action: ["ssm:GetParameter", "ssm:PutParameter"],
+              Action: ["ssm:GetParameter"],
+              Resource: [
+                this.instanceSecretParameter.arn,
+                ...envParameters.map((parameter) => parameter.arn),
+              ],
+            },
+            {
+              // The two it writes: the secret it generates on the first boot
+              // and the admin key it mints.
+              Effect: "Allow",
+              Action: ["ssm:PutParameter"],
               Resource: [this.instanceSecretParameter.arn, this._adminKeyParameter.arn],
             },
             {
@@ -269,15 +479,16 @@ export class ConvexBackend extends $util.ComponentResource {
     // so its `${PORT:-3210}` style defaults survive untouched.
     const composeFile = readFileSync(path.join($cli.paths.root, COMPOSE_FILE), "utf8")
 
+    // One wildcard site block, so Caddy requests a single `*.<domain>`
+    // certificate and routes on the Host header inside it. Anything under the
+    // domain that is not one of the three hostnames gets the connection
+    // dropped rather than a proxied response.
+    //
     // wait_for_route53_sync holds the challenge until Route 53 reports the
     // TXT record on all four of its nameservers. Without it Caddy sees the
     // record on one and tells Let's Encrypt to check, whose multi-perspective
     // validation then hits a nameserver that does not have it yet and fails
     // with NXDOMAIN "during secondary validation". Seen on the first deploy.
-    // One wildcard site block, so Caddy requests a single `*.<domain>`
-    // certificate and routes on the Host header inside it. Anything under the
-    // domain that is not one of the three hostnames gets the connection
-    // dropped rather than a proxied response.
     const caddyfile = $util
       .all([
         this._hosts.api,
@@ -338,7 +549,7 @@ export class ConvexBackend extends $util.ComponentResource {
       )
 
     // Origins must be the public URLs Caddy serves, otherwise the backend and
-    // dashboard generate 127.0.0.1 links. The secret is appended at boot.
+    // dashboard generate 127.0.0.1 links. The secrets are appended at boot.
     const composeEnv = $util
       .all([this._hosts.api, this._hosts.site])
       .apply(([api, site]) =>
@@ -349,6 +560,29 @@ export class ConvexBackend extends $util.ComponentResource {
           `INSTANCE_NAME=${this._instanceName}`,
         ].join("\n")
       )
+
+    // One fetch per parameter, each a block of lines for .env.
+    const fetchEnvParameters = $util
+      .all(envParameters.map((parameter) => parameter.name))
+      .apply((names) =>
+        names
+          .map(
+            (parameterName) =>
+              `aws ssm get-parameter --name '${parameterName}' \\\n` +
+              `  --with-decryption --query Parameter.Value --output text >> .env\n` +
+              `echo >> .env`
+          )
+          .join("\n")
+      )
+
+    // RDS presents a private Amazon CA the backend otherwise rejects as
+    // UnknownIssuer. The compose file mounts ./certs into the container.
+    const fetchDatabaseCa =
+      database.engine === "postgres"
+        ? $interpolate`install -m 0755 -d certs
+curl -fsSL --retry 3 -o certs/rds-ca.pem \\
+  https://truststore.pki.rds.amazonaws.com/${region}/${region}-bundle.pem`
+        : ""
 
     const userData = $interpolate`#!/bin/bash
 # No -x: this script handles the instance secret and the admin key, and
@@ -373,8 +607,8 @@ systemctl enable --now docker
 
 # ---- caddy ----
 
-# The download API builds Caddy with the route53 DNS plugin, so no Go
-# toolchain is needed on the box.
+# The download API builds Caddy with the plugins above, so no Go toolchain
+# is needed on the box.
 curl -fsSL --retry 3 -o /usr/bin/caddy '${CADDY_DOWNLOAD_URL}'
 chmod +x /usr/bin/caddy
 
@@ -387,7 +621,7 @@ cat > /etc/caddy/Caddyfile <<'EOF'
 ${caddyfile}
 EOF
 
-# The upstream unit, plus the region the route53 plugin's AWS SDK needs.
+# The upstream unit, plus the region the AWS SDK in both plugins needs.
 # Credentials come from the instance profile through IMDS: Caddy runs on the
 # host, so the hop limit below does not cut it off.
 cat > /etc/systemd/system/caddy.service <<'EOF'
@@ -423,10 +657,11 @@ cat > docker-compose.yml <<'EOF'
 ${composeFile}
 EOF
 
+${fetchDatabaseCa}
+
 # The first host to boot generates the secret and publishes it; every host
 # after that reads it back, which is what keeps admin keys valid through a
-# replacement. It never touches userData, which anyone with
-# ec2:DescribeInstanceAttribute can read.
+# replacement.
 INSTANCE_SECRET="$(aws ssm get-parameter --name '${this.instanceSecretParameter.name}' \\
   --with-decryption --query Parameter.Value --output text)"
 if [ "$INSTANCE_SECRET" = '${PENDING}' ]; then
@@ -435,11 +670,14 @@ if [ "$INSTANCE_SECRET" = '${PENDING}' ]; then
     --type SecureString --overwrite --value "$INSTANCE_SECRET"
 fi
 
+# Mode 600: from here on .env holds credentials.
 umask 077
 cat > .env <<'EOF'
 ${composeEnv}
 EOF
 echo "INSTANCE_SECRET=$INSTANCE_SECRET" >> .env
+echo >> .env
+${fetchEnvParameters}
 umask 022
 
 docker compose up -d
@@ -452,13 +690,14 @@ systemctl enable --now caddy
 # ---- admin key ----
 
 # The backend has to be up to mint it. The healthcheck in the compose file
-# uses the same URL.
-for _ in $(seq 1 60); do
+# uses the same URL. Generous, since a managed database adds a schema
+# migration to the first start.
+for _ in $(seq 1 120); do
   curl -sf http://127.0.0.1:${PORT.api}/version > /dev/null && break
   sleep 5
 done
 
-# generate_admin_key.sh prints a heading line and then the key.
+# generate_admin_key.sh prints a heading on stderr and the key on stdout.
 ADMIN_KEY="$(docker compose exec -T backend ./generate_admin_key.sh | tail -n 1 | tr -d '[:space:]')"
 aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
   --type SecureString --overwrite --value "$ADMIN_KEY"
@@ -485,8 +724,8 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
         subnetId: args.vpc.publicSubnets.apply((subnets) => subnets[0]),
         vpcSecurityGroupIds: [this.securityGroup.id],
         iamInstanceProfile: instanceProfile.name,
-        // Needed before the Elastic IP associates, or the instance has no
-        // route out and every curl in userData hangs.
+        // The route out during boot. With an Elastic IP it is replaced once
+        // the association lands; without one it is the address DNS follows.
         associatePublicIpAddress: true,
         rootBlockDevice: {
           volumeSize: args.volumeSize ?? 30,
@@ -506,15 +745,18 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
         ...args.transform?.instance,
       },
       // The boot script's first AWS calls are the parameter fetches; without
-      // this the instance can boot before its permission exists.
-      { parent, dependsOn: [policy] }
+      // this the instance can boot before its permission, or a parameter
+      // still waiting on RDS, exists.
+      { parent, dependsOn: [policy, ...envParameters] }
     )
 
-    new aws.ec2.EipAssociation(
-      `${name}EipAssociation`,
-      { instanceId: this.instance.id, allocationId: this.eip.allocationId },
-      { parent }
-    )
+    if (this.eip) {
+      new aws.ec2.EipAssociation(
+        `${name}EipAssociation`,
+        { instanceId: this.instance.id, allocationId: this.eip.allocationId },
+        { parent }
+      )
+    }
 
     // ---- dns --------------------------------------------------------------
 
@@ -527,7 +769,7 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
           name: host,
           type: "A",
           ttl: 60,
-          records: [this.eip.publicIp],
+          records: [this.publicIp],
         },
         { parent }
       )
@@ -558,9 +800,12 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
     return $interpolate`https://${this._hosts.dashboard}`
   }
 
-  /** The Elastic IP the hostnames resolve to. */
+  /**
+   * The address the hostnames resolve to: the Elastic IP with `elasticIp`,
+   * otherwise the instance's own public address.
+   */
   get publicIp(): $util.Output<string> {
-    return this.eip.publicIp
+    return this.eip ? this.eip.publicIp : this.instance.publicIp
   }
 
   get instanceId(): $util.Output<string> {
@@ -583,6 +828,11 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
     return this._adminKeyParameter.name
   }
 
+  /** The managed database's hostname, or undefined with SQLite. */
+  get databaseHost(): $util.Output<string> | undefined {
+    return this.database?.host
+  }
+
   /** The underlying resources. */
   get nodes() {
     return {
@@ -592,6 +842,8 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
       role: this.role,
       instanceSecretParameter: this.instanceSecretParameter,
       adminKeyParameter: this._adminKeyParameter,
+      database: this.database,
+      storageBuckets: this.storageBuckets,
     }
   }
 
