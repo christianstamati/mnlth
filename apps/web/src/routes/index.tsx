@@ -9,6 +9,7 @@ export const Route = createFileRoute("/")({ component: App })
 function App() {
   const messages = useQuery(api.chat.getMessages)
   const sendMessage = useMutation(api.chat.sendMessage)
+  const [username, setUsername] = useState("")
   const [body, setBody] = useState("")
 
   return (
@@ -28,11 +29,17 @@ function App() {
           className="flex flex-col gap-2"
           onSubmit={(event) => {
             event.preventDefault()
-            if (!body.trim()) return
-            void sendMessage({ user: "me", body })
+            if (!username.trim() || !body.trim()) return
+            void sendMessage({ user: "me", username: username.trim(), body })
             setBody("")
           }}
         >
+          <input
+            className="rounded-md border px-3 py-1"
+            placeholder="Your name"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
           <input
             className="rounded-md border px-3 py-1"
             placeholder="Say something to Convex"
@@ -48,8 +55,10 @@ function App() {
           ) : (
             messages.map((message) => (
               <li key={message._id}>
-                <span className="font-mono">{message.user}</span>:{" "}
-                {message.body}
+                <span className="font-medium">
+                  {message.username ?? "anonymous"}
+                </span>
+                : {message.body}
               </li>
             ))
           )}
