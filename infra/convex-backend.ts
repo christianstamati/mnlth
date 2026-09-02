@@ -1,4 +1,4 @@
-/// <reference path="../../.sst/platform/config.d.ts" />
+/// <reference path="../.sst/platform/config.d.ts" />
 
 /**
  * A self-hosted Convex backend on one EC2 instance.
@@ -14,7 +14,7 @@
  *     hostname to a loopback port. Caddy keeps the certificate in a shared S3
  *     bucket, so it is issued once and reused by every stage and every
  *     replacement instance; renewal happens once for all of them too.
- *   - the compose stack from `docker-compose.yml` next to this file, embedded
+ *   - the compose stack (`COMPOSE_FILE` below), embedded
  *     into userData so what boots on the box is what was tested locally
  *   - two SSM SecureString parameters: the instance secret (stable across
  *     host replacements, so admin keys keep working) and the admin key the
@@ -39,11 +39,85 @@
  *   // convex.adminKeyParameter -> SSM path of the admin key
  */
 
-import { readFileSync } from "node:fs"
-import path from "node:path"
-
 const COMPOSE_PLUGIN_VERSION = "v5.5.0"
-const COMPOSE_FILE = "infra/convex-backend/docker-compose.yml"
+
+// The compose stack the instance runs, written to /convex/docker-compose.yml
+// at boot. `\${VAR:-default}` is Compose's own substitution, escaped here so
+// the template literal leaves it alone. Runnable locally too: paste it into
+// a docker-compose.yml and `docker compose up -d`.
+const COMPOSE_FILE = `
+services:
+  backend:
+    image: ghcr.io/get-convex/convex-backend:latest
+    stop_grace_period: 10s
+    stop_signal: SIGINT
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:\${PORT:-3210}:3210"
+      - "127.0.0.1:\${SITE_PROXY_PORT:-3211}:3211"
+    volumes:
+      - data:/convex/data
+      # CA bundles for PG_CA_FILE, e.g. the RDS one. Empty locally.
+      - ./certs:/convex/certs:ro
+    environment:
+      - V8_ACTION_USER_TIMEOUT_SECS
+      - NODE_ACTION_USER_TIMEOUT_SECS
+      - APPLICATION_MAX_CONCURRENT_MUTATIONS=\${APPLICATION_MAX_CONCURRENT_MUTATIONS:-16}
+      - APPLICATION_MAX_CONCURRENT_NODE_ACTIONS=\${APPLICATION_MAX_CONCURRENT_NODE_ACTIONS:-16}
+      - APPLICATION_MAX_CONCURRENT_QUERIES=\${APPLICATION_MAX_CONCURRENT_QUERIES:-16}
+      - APPLICATION_MAX_CONCURRENT_V8_ACTIONS=\${APPLICATION_MAX_CONCURRENT_V8_ACTIONS:-16}
+      - AWS_ACCESS_KEY_ID
+      - AWS_REGION
+      - AWS_S3_DISABLE_CHECKSUMS
+      - AWS_S3_DISABLE_SSE
+      - AWS_S3_FORCE_PATH_STYLE
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - CONVEX_CLOUD_ORIGIN=\${CONVEX_CLOUD_ORIGIN:-http://127.0.0.1:\${PORT:-3210}}
+      - CONVEX_RELEASE_VERSION_DEV
+      - CONVEX_SITE_ORIGIN=\${CONVEX_SITE_ORIGIN:-http://127.0.0.1:\${SITE_PROXY_PORT:-3211}}
+      - DATABASE_URL
+      - DISABLE_BEACON
+      - DISABLE_METRICS_ENDPOINT=\${DISABLE_METRICS_ENDPOINT:-true} # Enable if you want prometheus compatible /metrics endpoint
+      - DOCUMENT_RETENTION_DELAY=\${DOCUMENT_RETENTION_DELAY:-172800} # Lower default document retention to 2 days
+      - DO_NOT_REQUIRE_SSL
+      - HTTP_SERVER_TIMEOUT_SECONDS
+      - INSTANCE_NAME
+      - INSTANCE_SECRET
+      - MYSQL_URL
+      - PG_CA_FILE
+      - POSTGRES_URL
+      - REDACT_LOGS_TO_CLIENT
+      - RUST_BACKTRACE
+      - RUST_LOG=\${RUST_LOG:-info}
+      - S3_ENDPOINT_URL
+      - S3_STORAGE_EXPORTS_BUCKET
+      - S3_STORAGE_FILES_BUCKET
+      - S3_STORAGE_MODULES_BUCKET
+      - S3_STORAGE_SEARCH_BUCKET
+      - S3_STORAGE_SNAPSHOT_IMPORTS_BUCKET
+    healthcheck:
+      test: curl -f http://localhost:3210/version
+      interval: 5s
+      start_period: 10s
+
+  dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:latest
+    stop_grace_period: 10s
+    stop_signal: SIGINT
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:\${DASHBOARD_PORT:-6791}:6791"
+    environment:
+      - NEXT_PUBLIC_DEPLOYMENT_URL=\${NEXT_PUBLIC_DEPLOYMENT_URL:-http://127.0.0.1:\${PORT:-3210}}
+      - NEXT_PUBLIC_LOAD_MONACO_INTERNALLY
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  data:
+`
 
 // The download API builds Caddy with plugins: Route 53 for the DNS-01
 // challenge and S3 for shared certificate storage.
@@ -529,7 +603,6 @@ export class ConvexBackend extends $util.ComponentResource {
     // Read at deploy time and embedded whole, so what boots on the box is the
     // file tested locally. Passed as a value, not inlined into the template,
     // so its `${PORT:-3210}` style defaults survive untouched.
-    const composeFile = readFileSync(path.join($cli.paths.root, COMPOSE_FILE), "utf8")
 
     // One wildcard site block, so Caddy requests a single `*.<domain>`
     // certificate and routes on the Host header inside it. Anything under the
@@ -706,7 +779,7 @@ install -m 0755 -d "$STACK_DIR"
 cd "$STACK_DIR"
 
 cat > docker-compose.yml <<'EOF'
-${composeFile}
+${COMPOSE_FILE.trim()}
 EOF
 
 ${fetchDatabaseCa}
