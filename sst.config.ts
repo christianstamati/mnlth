@@ -5,7 +5,7 @@
  * per stage; production owns the VPC, so deploy that stage first.
  *
  *   bun sst deploy --stage production   ->  api.fullstackaws.dev
- *   bun sst deploy --stage dev          ->  api.dev.fullstackaws.dev
+ *   bun sst deploy --stage dev          ->  dev-api.fullstackaws.dev
  */
 
 const BASE_DOMAIN = "fullstackaws.dev"
@@ -15,7 +15,7 @@ const REGION = "eu-central-1"
 // pinned by hand after the first production deploy (it is in that deploy's
 // `vpcId` output). A constant, not a lookup: production's program never
 // changes shape between deploys, and no stage can pick up a stray VPC.
-const SHARED_VPC_ID = ""
+const SHARED_VPC_ID = "vpc-0d792aa9449fef16d"
 
 export default $config({
   app(input) {
@@ -38,7 +38,6 @@ export default $config({
     const { ConvexBackend } = await import("./infra/convex-backend")
 
     const isProd = $app.stage === "production"
-    const domain = isProd ? BASE_DOMAIN : `${$app.stage}.${BASE_DOMAIN}`
 
     if (!isProd && !SHARED_VPC_ID)
       throw new Error(
@@ -52,8 +51,9 @@ export default $config({
 
     const convex = new ConvexBackend("Convex", {
       vpc,
-      domain,
-      zone: BASE_DOMAIN,
+      domain: BASE_DOMAIN,
+      // Flat names, so one `*.fullstackaws.dev` certificate covers every stage.
+      prefix: isProd ? "" : `${$app.stage}-`,
       letsEncryptStaging: true,
     })
 

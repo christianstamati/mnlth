@@ -7,9 +7,10 @@
  *
  *   - an arm64 Amazon Linux 2023 instance in a public subnet of the given VPC
  *   - an Elastic IP and three Route 53 A records pointing at it:
- *     `api.<domain>`, `site.<domain>`, `dashboard.<domain>`
- *   - a system-level Caddy that terminates TLS with Let's Encrypt (DNS-01 via
- *     Route 53) and proxies each hostname to a loopback port
+ *     `<prefix>api.<domain>`, `<prefix>site.<domain>`, `<prefix>dashboard.<domain>`
+ *   - a system-level Caddy that terminates TLS with one Let's Encrypt wildcard
+ *     certificate for `*.<domain>` (DNS-01 via Route 53) and proxies each
+ *     hostname to a loopback port
  *   - the compose stack from `self-hosted-convex/docker-compose.yml`, embedded
  *     into userData so what boots on the box is what was tested locally
  *   - two SSM SecureString parameters: the instance secret (stable across
@@ -23,10 +24,10 @@
  *
  *   const convex = new ConvexBackend("Convex", {
  *     vpc,
- *     domain: "dev.fullstackaws.dev",
- *     zone: "fullstackaws.dev",
+ *     domain: "fullstackaws.dev",
+ *     prefix: "dev-",
  *   })
- *   // convex.url        -> https://api.dev.fullstackaws.dev
+ *   // convex.url        -> https://dev-api.fullstackaws.dev
  *   // convex.adminKeyParameter -> SSM path of the admin key
  */
 
@@ -51,16 +52,20 @@ export interface ConvexBackendArgs {
    */
   vpc: sst.aws.Vpc
   /**
-   * The base domain. The backend answers on `api.`, `site.` and `dashboard.`
-   * under it, e.g. `fullstackaws.dev` or `dev.fullstackaws.dev`.
+   * The Route 53 hosted zone the hostnames live in, e.g. `fullstackaws.dev`.
+   * The certificate is a wildcard for `*.<domain>`, so the hostnames must sit
+   * directly under it: one label, no nesting.
    */
   domain: $util.Input<string>
   /**
-   * The Route 53 hosted zone the records go in. Needed when `domain` is a
-   * subdomain of the zone.
-   * @default The `domain`.
+   * Prepended to each hostname, e.g. `dev-` gives `dev-api.<domain>`. Empty
+   * for the apex names `api.<domain>`, `site.<domain>`, `dashboard.<domain>`.
+   *
+   * Every stage shares the one wildcard name, so Let's Encrypt's limit of 5
+   * duplicate certificates per week counts rebuilds of all stages together.
+   * @default ""
    */
-  zone?: $util.Input<string>
+  prefix?: $util.Input<string>
   /**
    * EC2 instance type. Must be arm64 (Graviton): the AMI is arm64 and Convex
    * publishes linux/arm64 images.
@@ -107,7 +112,7 @@ export class ConvexBackend extends $util.ComponentResource {
     const parent = this
 
     const domain = $util.output(args.domain)
-    const zoneName = $util.output(args.zone ?? args.domain)
+    const prefix = $util.output(args.prefix ?? "")
     const region = aws.getRegionOutput().region
 
     // What the backend identifies itself as. Admin keys are minted from and
@@ -115,12 +120,12 @@ export class ConvexBackend extends $util.ComponentResource {
     this._instanceName = `${$app.name}-${$app.stage}`
 
     this._hosts = {
-      api: $interpolate`api.${domain}`,
-      site: $interpolate`site.${domain}`,
-      dashboard: $interpolate`dashboard.${domain}`,
+      api: $interpolate`${prefix}api.${domain}`,
+      site: $interpolate`${prefix}site.${domain}`,
+      dashboard: $interpolate`${prefix}dashboard.${domain}`,
     }
 
-    const zone = aws.route53.getZoneOutput({ name: zoneName, privateZone: false })
+    const zone = aws.route53.getZoneOutput({ name: domain, privateZone: false })
 
     // ---- network ----------------------------------------------------------
 
@@ -243,12 +248,16 @@ export class ConvexBackend extends $util.ComponentResource {
     // record on one and tells Let's Encrypt to check, whose multi-perspective
     // validation then hits a nameserver that does not have it yet and fails
     // with NXDOMAIN "during secondary validation". Seen on the first deploy.
+    // One wildcard site block, so Caddy requests a single `*.<domain>`
+    // certificate and routes on the Host header inside it. Anything under the
+    // domain that is not one of the three hostnames gets the connection
+    // dropped rather than a proxied response.
     const caddyfile = $util
-      .all([this._hosts.api, this._hosts.site, this._hosts.dashboard, zoneName, zone.zoneId])
-      .apply(([api, site, dashboard, zone, zoneId]) =>
+      .all([this._hosts.api, this._hosts.site, this._hosts.dashboard, domain, zone.zoneId])
+      .apply(([api, site, dashboard, domain, zoneId]) =>
         [
           "{",
-          `\temail admin@${zone}`,
+          `\temail admin@${domain}`,
           "\tacme_dns route53 {",
           `\t\thosted_zone_id ${zoneId}`,
           "\t\twait_for_route53_sync true",
@@ -263,16 +272,25 @@ export class ConvexBackend extends $util.ComponentResource {
           "\treverse_proxy {args[0]}",
           "}",
           "",
-          `${api} {`,
-          `\timport proxy 127.0.0.1:${PORT.api}`,
-          "}",
+          `*.${domain} {`,
+          `\t@api host ${api}`,
+          `\thandle @api {`,
+          `\t\timport proxy 127.0.0.1:${PORT.api}`,
+          "\t}",
           "",
-          `${site} {`,
-          `\timport proxy 127.0.0.1:${PORT.site}`,
-          "}",
+          `\t@site host ${site}`,
+          `\thandle @site {`,
+          `\t\timport proxy 127.0.0.1:${PORT.site}`,
+          "\t}",
           "",
-          `${dashboard} {`,
-          `\timport proxy 127.0.0.1:${PORT.dashboard}`,
+          `\t@dashboard host ${dashboard}`,
+          `\thandle @dashboard {`,
+          `\t\timport proxy 127.0.0.1:${PORT.dashboard}`,
+          "\t}",
+          "",
+          "\thandle {",
+          "\t\tabort",
+          "\t}",
           "}",
           "",
         ].join("\n")
