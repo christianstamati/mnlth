@@ -27,6 +27,11 @@ jobs:
   deploy:
     needs: resolve
     if: needs.resolve.outputs.stage != ''
+    # A called workflow can only use what its caller grants.
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
     with:
