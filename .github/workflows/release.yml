@@ -1,0 +1,23 @@
+# Every push to main updates the release pull request: it bumps the version
+# in package.json, writes CHANGELOG.md from the conventional commits since
+# the last tag, and lists them. Merging it tags the commit and publishes the
+# GitHub Release; that merge is a push to main, so production deploys as
+# for any other push. notify-release.yml posts the release to Slack.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: node
