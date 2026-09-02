@@ -28,8 +28,6 @@ export default $config({
         aws: {
           region: settings.region,
         },
-        // `command.local.Command`: runs the Convex push as part of the deploy.
-        command: "1.2.1",
       },
     }
   },
@@ -40,9 +38,6 @@ export default $config({
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
     const { settings, storageFor, databaseFor } = await import("./infra/settings")
-    const { createHash } = await import("node:crypto")
-    const { readdirSync, readFileSync } = await import("node:fs")
-    const path = await import("node:path")
 
     const isProd = $app.stage === "production"
     const domain = settings.domain
@@ -103,33 +98,9 @@ export default $config({
       database: databaseFor($app.stage),
     })
 
-    // `sst deploy` brings the backend up empty. This pushes
-    // `packages/backend/convex` into it, re-running whenever those files or
-    // the backend URL change. The first push of a stage waits for the
-    // instance to mint its admin key, a few minutes into its first boot.
-    // In `sst dev` the DevCommand below does this instead, on every save.
-    if (!$dev) {
-      const convexDir = path.join($cli.paths.root, "packages/backend/convex")
-      const hash = createHash("sha256")
-      for (const file of readdirSync(convexDir, { recursive: true, withFileTypes: true })) {
-        if (!file.isFile() || file.parentPath.includes("_generated")) continue
-        const full = path.join(file.parentPath, file.name)
-        hash.update(full).update(readFileSync(full))
-      }
-
-      new command.local.Command(
-        "ConvexDeploy",
-        {
-          create: `bun scripts/convex-deploy.ts --stage ${$app.stage} --wait`,
-          update: `bun scripts/convex-deploy.ts --stage ${$app.stage} --wait`,
-          dir: $cli.paths.root,
-          triggers: [hash.digest("hex"), convex.url],
-          environment: { AWS_REGION: settings.region },
-        },
-        { dependsOn: [convex] }
-      )
-    }
-
+    // `sst deploy` brings the backend up empty; push the functions by hand
+    // with `bun convex:deploy --stage <stage>`. In `sst dev` this pane does
+    // it on every save.
     new sst.x.DevCommand("ConvexDev", {
       dev: {
         command: `bun scripts/convex-deploy.ts --stage ${$app.stage} --wait --dev`,

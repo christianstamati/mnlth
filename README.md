@@ -118,11 +118,8 @@ the key can only come from the running backend: the instance mints it and
 publishes it to SSM a few minutes into its first boot.
 
 `scripts/convex-deploy.ts` reads the URL from `/mnlth/<stage>/convex/url` and
-the key from `/mnlth/<stage>/convex/admin-key` and runs `convex deploy`. The
-stack runs it as part of `sst deploy` (a `command.local.Command` that
-re-triggers when the convex sources or the backend URL change, and waits for
-the key on a first deploy), so a deploy ends with the functions live. It can
-also be run by hand:
+the key from `/mnlth/<stage>/convex/admin-key` and runs `convex deploy`. Run
+it after `sst deploy`, and again whenever `packages/backend/convex` changes:
 
 ```bash
 bun convex:deploy --stage production          # fails fast if the key is not published yet
