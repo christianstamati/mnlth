@@ -117,6 +117,14 @@ keep_parameter() {
   return 1
 }
 
+# /sst/bootstrap records the asset repository by URL, so deleting it while
+# the parameter stays breaks the next container deploy.
+keep_repository() {
+  if [ "$INCLUDE_SST" -eq 1 ]; then return 1; fi
+  case "$1" in sst-asset) return 0 ;; esac
+  return 1
+}
+
 # Buckets are global names with a home region; only touch the ones that live
 # in the target region.
 buckets_in_region() {
@@ -376,6 +384,7 @@ done
 
 section "ECR repositories"
 for r in $(q ecr describe-repositories --query 'repositories[].repositoryName' --output text); do
+  if keep_repository "$r"; then note "keeping $r"; continue; fi
   run aws ecr delete-repository --repository-name "$r" --force
 done
 
