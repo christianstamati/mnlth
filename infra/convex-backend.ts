@@ -238,13 +238,21 @@ export class ConvexBackend extends $util.ComponentResource {
     // so its `${PORT:-3210}` style defaults survive untouched.
     const composeFile = readFileSync(path.join($cli.paths.root, COMPOSE_FILE), "utf8")
 
+    // wait_for_route53_sync holds the challenge until Route 53 reports the
+    // TXT record on all four of its nameservers. Without it Caddy sees the
+    // record on one and tells Let's Encrypt to check, whose multi-perspective
+    // validation then hits a nameserver that does not have it yet and fails
+    // with NXDOMAIN "during secondary validation". Seen on the first deploy.
     const caddyfile = $util
-      .all([this._hosts.api, this._hosts.site, this._hosts.dashboard, zoneName])
-      .apply(([api, site, dashboard, zone]) =>
+      .all([this._hosts.api, this._hosts.site, this._hosts.dashboard, zoneName, zone.zoneId])
+      .apply(([api, site, dashboard, zone, zoneId]) =>
         [
           "{",
           `\temail admin@${zone}`,
-          "\tacme_dns route53",
+          "\tacme_dns route53 {",
+          `\t\thosted_zone_id ${zoneId}`,
+          "\t\twait_for_route53_sync true",
+          "\t}",
           ...(args.letsEncryptStaging
             ? ["\tacme_ca https://acme-staging-v02.api.letsencrypt.org/directory"]
             : []),
