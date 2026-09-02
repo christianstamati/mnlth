@@ -2,7 +2,10 @@
 # in package.json, writes CHANGELOG.md from the conventional commits since
 # the last tag, and lists them. Merging it tags the commit and publishes the
 # GitHub Release; that merge is a push to main, so production deploys as
-# for any other push. notify-release.yml posts the release to Slack.
+# for any other push.
+#
+# The Slack post lives here rather than on a `release` event: a release
+# created with the workflow token does not trigger other workflows.
 name: release
 
 on:
@@ -17,7 +20,33 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      url: ${{ steps.release.outputs.html_url }}
+      body: ${{ steps.release.outputs.body }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           release-type: node
+
+  slack:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts/release-slack.sh
+          sparse-checkout-cone-mode: false
+      - run: bash scripts/release-slack.sh
+        env:
+          REPO: ${{ github.event.repository.name }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+          URL: ${{ needs.release-please.outputs.url }}
+          BODY: ${{ needs.release-please.outputs.body }}
+          WEBHOOK: ${{ secrets.SLACK_RELEASES_WEBHOOK }}

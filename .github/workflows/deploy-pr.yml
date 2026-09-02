@@ -1,7 +1,8 @@
 # Every pull request from this repository gets its own stage, `pr-<number>`,
 # redeployed on each push and removed by remove-pr.yml when it closes.
 # Forks are skipped: they cannot assume the AWS role. Drafts are skipped
-# until marked ready, so a work-in-progress PR costs no EC2 box.
+# until marked ready, so a work-in-progress PR costs no EC2 box. So is the
+# release-please PR: it only bumps the version and changelog.
 name: deploy pr
 
 on:
@@ -17,7 +18,8 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft &&
-      github.actor != 'dependabot[bot]'
+      github.actor != 'dependabot[bot]' &&
+      !startsWith(github.head_ref, 'release-please--')
     # A called workflow can only use what its caller grants.
     permissions:
       id-token: write
