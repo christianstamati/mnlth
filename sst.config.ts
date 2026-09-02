@@ -15,8 +15,10 @@ export default $config({
   app(input) {
     return {
       name: "mnlth",
-      // removal: input?.stage === "production" ? "retain" : "remove",
-      // protect: ["production"].includes(input?.stage),
+      // "remove" for every stage while iterating: SST's default is "retain",
+      // which leaves the VPC, subnets and any RDS instance behind on remove.
+      // Put back `retain` and `protect` for production once real data lands.
+      removal: "remove",
       home: "aws",
       providers: {
         aws: {
