@@ -1,7 +1,8 @@
 /**
  * Per-deployment settings that are not code: read from `sst.settings.json` at the
  * repo root. Kept out of `sst.config.ts` so the domain, region and per-stage
- * choices change without touching the stack.
+ * choices change without touching the stack. Only `domain` and `region` are
+ * required; everything else falls back to `DEFAULTS`.
  */
 import raw from "../sst.settings.json"
 
@@ -27,6 +28,14 @@ export interface SstSettings {
   database: PerStage<Database>
 }
 
+/** What `sst.settings.json` gets for every key it leaves out. */
+export const DEFAULTS: Omit<SstSettings, "domain" | "region"> = {
+  protect: ["production"],
+  removal: { production: "retain", "*": "remove" },
+  storage: { production: "s3", "*": "volume" },
+  database: { production: "mysql", "*": "sqlite" },
+}
+
 const REMOVALS: Removal[] = ["remove", "retain", "retain-all"]
 const STORAGES: Storage[] = ["volume", "s3"]
 const DATABASES: Database[] = ["sqlite", "postgres", "mysql"]
@@ -35,16 +44,17 @@ function check(data: unknown): SstSettings {
   const d = data as Partial<SstSettings>
   if (typeof d.domain !== "string" || !d.domain) fail("domain", "a hostname")
   if (typeof d.region !== "string" || !d.region) fail("region", "an AWS region")
-  if (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string"))
+  if (d.protect !== undefined && (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string")))
     fail("protect", "a list of stage names")
   checkPerStage("removal", d.removal, REMOVALS)
   checkPerStage("storage", d.storage, STORAGES)
   checkPerStage("database", d.database, DATABASES)
-  return d as SstSettings
+  return { ...DEFAULTS, ...d } as SstSettings
 }
 
 function checkPerStage<T extends string>(key: string, value: unknown, allowed: T[]) {
   const expected = allowed.join(" | ")
+  if (value === undefined) return
   if (typeof value === "string") {
     if (!allowed.includes(value as T)) fail(key, expected)
   } else if (value && typeof value === "object") {

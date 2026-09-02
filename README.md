@@ -90,7 +90,8 @@ bun sst:remove                       # tear down
 ### Deployment settings
 
 `sst.settings.json` holds what varies per deployment but not per stage: the base
-domain, the region, and the lifecycle policy.
+domain, the region, and per-stage choices. Only `domain` and `region` are
+required; the rest default to what is shown here.
 
 ```json
 {
