@@ -1,6 +1,6 @@
 # Project name, so containers, network and volume are convex-* wherever this
 # file runs, instead of being named after the directory it sits in.
-name: convex
+name: self-hosted-convex
 
 services:
   backend:
