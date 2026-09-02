@@ -14,6 +14,62 @@ described in SST and deployed by `git push`.
 - **Runs on a laptop with only Docker.** `bun dev` brings up the same
   compose stack the servers run.
 
+## Quick start
+
+### On your machine, Docker only
+
+```bash
+bun install
+bun dev            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
+bun run down       # stop the containers
+bun run reset      # stop them and wipe the local database and files
+```
+
+`bun dev` is `turbo dev`. Every `dev` task depends on the backend package's
+`setup-dev` task (`turbo.json`), which runs `scripts/setup-dev.ts`: it starts
+`docker/docker-compose.yml` with a generated `INSTANCE_SECRET` kept in
+`docker/.env` (gitignored, so the admin key stays valid across restarts),
+mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
+writes `VITE_CONVEX_URL=http://127.0.0.1:3210` to `apps/web/.env.local`.
+It also puts the key in `docker/.env` as `NEXT_PUBLIC_ADMIN_KEY`, so the
+dashboard at http://127.0.0.1:6791 signs in by itself. Turbo then runs
+`convex dev` and Vite, one TUI pane each; switch with the arrow keys.
+
+### A personal stage in AWS
+
+```bash
+bun sst dev --stage <you>
+```
+
+Deploys the stage (its EC2 backend included, so the first run takes a few
+minutes), then runs Vite on http://localhost:3000 against that stage's
+backend. Push function changes with `bun convex:deploy --stage <you>`, or run
+`bun convex:deploy --stage <you> --dev` alongside to push on every save. Only
+point `sst dev` at your own stage, never at `staging` or `production`: it
+leaves dev-mode resources behind until the next `sst deploy`.
+
+### Adding UI components
+
+```bash
+bunx shadcn@latest add button -c apps/web
+```
+
+Components land in `packages/ui/src/components` and are imported from the
+workspace package:
+
+```tsx
+import { Button } from "@workspace/ui/components/button"
+```
+
+Backend functions reach the web app as generated types:
+
+```tsx
+import { api } from "@workspace/backend/convex/_generated/api"
+import { useQuery } from "convex/react"
+
+const messages = useQuery(api.chat.getMessages)
+```
+
 ## Stack
 
 | Layer | What | Where it runs |
@@ -73,62 +129,6 @@ scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key fr
 scripts/setup-dev.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
-```
-
-## Quick start
-
-### On your machine, Docker only
-
-```bash
-bun install
-bun dev            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
-bun run down       # stop the containers
-bun run reset      # stop them and wipe the local database and files
-```
-
-`bun dev` is `turbo dev`. Every `dev` task depends on the backend package's
-`setup-dev` task (`turbo.json`), which runs `scripts/setup-dev.ts`: it starts
-`docker/docker-compose.yml` with a generated `INSTANCE_SECRET` kept in
-`docker/.env` (gitignored, so the admin key stays valid across restarts),
-mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
-writes `VITE_CONVEX_URL=http://127.0.0.1:3210` to `apps/web/.env.local`.
-It also puts the key in `docker/.env` as `NEXT_PUBLIC_ADMIN_KEY`, so the
-dashboard at http://127.0.0.1:6791 signs in by itself. Turbo then runs
-`convex dev` and Vite, one TUI pane each; switch with the arrow keys.
-
-### A personal stage in AWS
-
-```bash
-bun sst dev --stage <you>
-```
-
-Deploys the stage (its EC2 backend included, so the first run takes a few
-minutes), then runs Vite on http://localhost:3000 against that stage's
-backend. Push function changes with `bun convex:deploy --stage <you>`, or run
-`bun convex:deploy --stage <you> --dev` alongside to push on every save. Only
-point `sst dev` at your own stage, never at `staging` or `production`: it
-leaves dev-mode resources behind until the next `sst deploy`.
-
-### Adding UI components
-
-```bash
-bunx shadcn@latest add button -c apps/web
-```
-
-Components land in `packages/ui/src/components` and are imported from the
-workspace package:
-
-```tsx
-import { Button } from "@workspace/ui/components/button"
-```
-
-Backend functions reach the web app as generated types:
-
-```tsx
-import { api } from "@workspace/backend/convex/_generated/api"
-import { useQuery } from "convex/react"
-
-const messages = useQuery(api.chat.getMessages)
 ```
 
 ## Deploying
