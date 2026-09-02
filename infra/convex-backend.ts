@@ -46,7 +46,7 @@ const COMPOSE_PLUGIN_VERSION = "v5.5.0"
 
 // The compose stack the instance runs, written to /opt/convex/docker-compose.yml
 // at boot. One file for the box and the laptop: `docker/docker-compose.yml`
-// is what `bun local` runs too. Read from the app root, which is where SST
+// is what `bun dev` runs too. Read from the app root, which is where SST
 // resolves paths from whatever bundle it evaluates this file in.
 const COMPOSE_FILE = readFileSync(
   join($cli.paths.root, "docker/docker-compose.yml"),

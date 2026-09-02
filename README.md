@@ -11,7 +11,7 @@ described in SST and deployed by `git push`.
   from a wildcard certificate.
 - **Nothing to log in to.** CI assumes an IAM role through OIDC. Admin keys
   are minted by the backend and kept in SSM. No secrets live in GitHub.
-- **Runs on a laptop with only Docker.** `bun local` brings up the same
+- **Runs on a laptop with only Docker.** `bun dev` brings up the same
   compose stack the servers run.
 
 ## Stack
@@ -68,9 +68,9 @@ packages/ui/               shadcn/ui components, Tailwind config, global CSS
 infra/convex-backend.ts    the ConvexBackend component: instance, Caddy, DNS, SSM, S3, RDS
 infra/shared.ts            production publishes shared ids to SSM; other stages read them
 infra/settings.ts          loads and validates sst.settings.json
-docker/docker-compose.yml  the Convex stack, run by the instances and by `bun local`
+docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
-scripts/local.ts           the whole app on this machine, no AWS
+scripts/dev.ts           the whole app on this machine, no AWS
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
 ```
@@ -81,12 +81,12 @@ sst.config.ts              the app; sst.settings.json holds domain, region and p
 
 ```bash
 bun install
-bun local            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
-bun local --reset    # wipe the local database and files first
-bun local --down     # stop the containers
+bun dev            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
+bun dev --reset    # wipe the local database and files first
+bun dev --down     # stop the containers
 ```
 
-`scripts/local.ts` starts `docker/docker-compose.yml` with a generated
+`scripts/dev.ts` starts `docker/docker-compose.yml` with a generated
 `INSTANCE_SECRET` kept in `docker/.env` (gitignored, so the admin key stays
 valid across restarts), mints an admin key into `packages/backend/.env.local`
 for the Convex CLI, then runs `turbo dev` with

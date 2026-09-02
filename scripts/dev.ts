@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url"
  * dashboard in Docker, then `turbo dev` for the functions push on save and
  * Vite on :3000, one TUI pane each.
  *
- *   bun local            # start everything
- *   bun local --reset    # wipe the local database and files first
- *   bun local --down     # stop the containers and exit
+ *   bun dev            # start everything
+ *   bun dev --reset    # wipe the local database and files first
+ *   bun dev --down     # stop the containers and exit
  *
  * `docker/docker-compose.yml` is the same stack the EC2 instances run.
  * Locally it gets `docker/.env` (written here, gitignored) and keeps its
@@ -51,7 +51,7 @@ if (!existsSync(COMPOSE_ENV)) {
   await Bun.write(
     COMPOSE_ENV,
     [
-      "# Written by scripts/local.ts. Local only; deployed stages keep theirs in SSM.",
+      "# Written by scripts/dev.ts. Local only; deployed stages keep theirs in SSM.",
       "INSTANCE_NAME=local",
       `INSTANCE_SECRET=${secret}`,
       "DISABLE_BEACON=true",
@@ -83,7 +83,7 @@ if (!adminKey.includes("|")) {
 await Bun.write(
   join(BACKEND_DIR, ".env.local"),
   [
-    "# Written by scripts/local.ts. Local backend; never a deployed one.",
+    "# Written by scripts/dev.ts. Local backend; never a deployed one.",
     `CONVEX_SELF_HOSTED_URL=${URL_API}`,
     `CONVEX_SELF_HOSTED_ADMIN_KEY=${adminKey}`,
     "",
