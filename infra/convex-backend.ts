@@ -10,7 +10,9 @@
  *     `<prefix>api.<domain>`, `<prefix>site.<domain>`, `<prefix>dashboard.<domain>`
  *   - a system-level Caddy that terminates TLS with one Let's Encrypt wildcard
  *     certificate for `*.<domain>` (DNS-01 via Route 53) and proxies each
- *     hostname to a loopback port
+ *     hostname to a loopback port. Caddy keeps the certificate in a shared S3
+ *     bucket, so it is issued once and reused by every stage and every
+ *     replacement instance; renewal happens once for all of them too.
  *   - the compose stack from `self-hosted-convex/docker-compose.yml`, embedded
  *     into userData so what boots on the box is what was tested locally
  *   - two SSM SecureString parameters: the instance secret (stable across
@@ -24,6 +26,7 @@
  *
  *   const convex = new ConvexBackend("Convex", {
  *     vpc,
+ *     certificateBucket,
  *     domain: "fullstackaws.dev",
  *     prefix: "dev-",
  *   })
@@ -36,8 +39,12 @@ import path from "node:path"
 
 const COMPOSE_PLUGIN_VERSION = "v5.5.0"
 const COMPOSE_FILE = "self-hosted-convex/docker-compose.yml"
+// The download API builds Caddy with plugins: Route 53 for the DNS-01
+// challenge and S3 for shared certificate storage.
 const CADDY_DOWNLOAD_URL =
-  "https://caddyserver.com/api/download?os=linux&arch=arm64&p=github.com/caddy-dns/route53"
+  "https://caddyserver.com/api/download?os=linux&arch=arm64" +
+  "&p=github.com/caddy-dns/route53" +
+  "&p=github.com/ss098/certmagic-s3"
 
 // Convex ports, all bound to loopback by the compose file.
 const PORT = { api: 3210, site: 3211, dashboard: 6791 }
@@ -51,6 +58,13 @@ export interface ConvexBackendArgs {
    * subnet, so the VPC needs at least one; no NAT gateway is required.
    */
   vpc: sst.aws.Vpc
+  /**
+   * Where Caddy stores certificates, keys and its ACME account. Shared by
+   * every stage, so the wildcard certificate is obtained once and reused.
+   * Holds the private key for `*.<domain>`: every stage's instance role can
+   * read it, so a compromised box of any stage exposes production's key.
+   */
+  certificateBucket: sst.aws.Bucket
   /**
    * The Route 53 hosted zone the hostnames live in, e.g. `fullstackaws.dev`.
    * The certificate is a wildcard for `*.<domain>`, so the hostnames must sit
@@ -213,6 +227,18 @@ export class ConvexBackend extends $util.ComponentResource {
               Resource: [this.instanceSecretParameter.arn, this._adminKeyParameter.arn],
             },
             {
+              // Caddy's S3 storage: certificates, keys, account and the lock
+              // it takes before issuing, so two stages never issue at once.
+              Effect: "Allow",
+              Action: ["s3:ListBucket", "s3:GetBucketLocation"],
+              Resource: [args.certificateBucket.arn],
+            },
+            {
+              Effect: "Allow",
+              Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+              Resource: [$interpolate`${args.certificateBucket.arn}/*`],
+            },
+            {
               // Caddy's route53 plugin solves the DNS-01 challenge by writing
               // TXT records into the zone.
               Effect: "Allow",
@@ -253,11 +279,26 @@ export class ConvexBackend extends $util.ComponentResource {
     // domain that is not one of the three hostnames gets the connection
     // dropped rather than a proxied response.
     const caddyfile = $util
-      .all([this._hosts.api, this._hosts.site, this._hosts.dashboard, domain, zone.zoneId])
-      .apply(([api, site, dashboard, domain, zoneId]) =>
+      .all([
+        this._hosts.api,
+        this._hosts.site,
+        this._hosts.dashboard,
+        domain,
+        zone.zoneId,
+        args.certificateBucket.name,
+        region,
+      ])
+      .apply(([api, site, dashboard, domain, zoneId, bucket, region]) =>
         [
           "{",
           `\temail admin@${domain}`,
+          // Credentials come from the instance role through IMDS.
+          "\tstorage s3 {",
+          `\t\thost s3.${region}.amazonaws.com`,
+          `\t\tbucket ${bucket}`,
+          "\t\tuse_iam_provider true",
+          "\t\tprefix caddy",
+          "\t}",
           "\tacme_dns route53 {",
           `\t\thosted_zone_id ${zoneId}`,
           "\t\twait_for_route53_sync true",
