@@ -16,6 +16,22 @@ described in SST and deployed by `git push`.
 
 ## Quick start
 
+### Prerequisites
+
+| Tool | For | Install |
+| --- | --- | --- |
+| [Bun](https://bun.sh) 1.4 | everything: scripts, package manager, Turbo, SST | `curl -fsSL https://bun.sh/install \| bash` (macOS, Linux, WSL) or `powershell -c "irm bun.sh/install.ps1 \| iex"` (Windows) |
+| [Docker](https://docs.docker.com/get-docker/) with Compose v2 | the local Convex backend and dashboard | Docker Desktop on macOS and Windows (WSL 2 backend); the `docker-ce` and `docker-compose-plugin` packages on Linux |
+| [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) v2 | only for a cloud stage, `bun convex:deploy`, `bun reset:aws` and shell access | `brew install awscli`; then `aws configure` with an IAM user for the account |
+| [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) | only for a shell or a database tunnel into an instance | `brew install --cask session-manager-plugin` |
+| [GitHub CLI](https://cli.github.com) | optional: opening PRs and watching runs from the terminal | `brew install gh` |
+
+Docker-only development needs the first two. Node is not required: Bun runs
+every script and Vite. The AWS CLI needs credentials for the account in
+`sst.settings.json` (`eu-central-1`); SST and the scripts pick them up from
+the default profile or the standard environment variables. `bun reset:aws`
+is a Bash script, so on Windows it runs under Git Bash or WSL.
+
 ### On your machine, Docker only
 
 ```bash
