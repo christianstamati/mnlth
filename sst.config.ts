@@ -8,21 +8,23 @@
  *   bun sst deploy --stage dev          ->  dev-api.fullstackaws.dev
  */
 
-const BASE_DOMAIN = "fullstackaws.dev"
-const REGION = "eu-central-1"
+// Domain, region and the per-stage lifecycle policy live in `sst.settings.json`.
+// This import is static because `app()` runs before the SST globals exist.
+import { settings, isProtected, removalFor } from "./infra/settings"
 
 export default $config({
   app(input) {
     return {
       name: "mnlth",
-      // "remove" for every stage while iterating: SST's default is "retain",
-      // which leaves the VPC, subnets and any RDS instance behind on remove.
-      // Put back `retain` and `protect` for production once real data lands.
-      removal: "remove",
+      // `removal` decides what `sst remove` keeps: SST's default "retain"
+      // leaves the VPC, subnets and any RDS instance behind. `protect`
+      // refuses to delete the stage's resources at all.
+      removal: removalFor(input.stage),
+      protect: isProtected(input.stage),
       home: "aws",
       providers: {
         aws: {
-          region: REGION,
+          region: settings.region,
         },
       },
     }
@@ -67,18 +69,13 @@ export default $config({
     const convex = new ConvexBackend("Convex", {
       vpc,
       certificateBucket,
-      domain: BASE_DOMAIN,
-      // Flat names, so one `*.fullstackaws.dev` certificate covers every stage.
+      domain: settings.domain,
+      // Flat names, so one `*.<domain>` certificate covers every stage.
       prefix: isProd ? "" : `${$app.stage}-`,
       // A stable address for production. Other stages follow the instance.
       elasticIp: isProd,
-      // Installed for ec2-user at launch and opens port 22 to everyone.
-      // Without it, SSH is admitted from EC2 Instance Connect only.
-      keyPairId: "key-07ece9db1f187d7dd",
-      storage: "s3",
-      database: "mysql",
-      // Defaults: SQLite and files on the root volume. Options are
-      // storage: "s3" and database: "postgres" | "mysql" | { engine, ... }.
+      storage: isProd ? "s3" : "volume",
+      database: isProd ? "mysql" : "sqlite",
     })
 
     return {

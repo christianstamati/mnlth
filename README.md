@@ -87,6 +87,28 @@ bunx sst deploy --stage dev
 bun sst:remove                       # tear down
 ```
 
+### Deployment settings
+
+`sst.settings.json` holds what varies per deployment but not per stage: the base
+domain, the region, and the lifecycle policy.
+
+```json
+{
+  "domain": "fullstackaws.dev",
+  "region": "eu-central-1",
+  "protect": ["production"],
+  "removal": { "production": "retain", "*": "remove" }
+}
+```
+
+`protect` lists stages whose resources refuse deletion; a deploy that must
+replace a resource on a protected stage fails, so leave it empty while a
+stage's instance name or database is still changing. `removal` is what
+`sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
+and any RDS instance) or `retain-all`, given as one policy or as a map keyed
+by stage with `*` as the fallback. `infra/settings.ts` validates the file at
+load time.
+
 ### Convex functions
 
 `sst deploy` brings the backend up but pushes nothing into it — the frontend
