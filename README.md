@@ -27,17 +27,12 @@ bun sst dev --stage <stage>
 ```
 
 `sst dev` deploys the stage (its EC2 backend included, so the first run takes
-a few minutes) and then runs two processes side by side against it:
-
-| Process      | What it runs                                                          |
-| ------------ | --------------------------------------------------------------------- |
-| `Web`        | Vite on http://localhost:3000, `VITE_CONVEX_URL` set to the stage's backend |
-| `convex dev` | `scripts/convex-deploy.ts --dev`: pushes `packages/backend/convex` on save |
-
-Nothing runs in Docker locally: the app in the browser talks to the stage's
-deployed Convex backend, the same one `bun sst deploy` serves at
-`<stage>.<domain>`. On a stage's first run the `convex dev` pane waits for
-the instance to publish its admin key, a few minutes into the boot.
+a few minutes) and then runs Vite on http://localhost:3000 with
+`VITE_CONVEX_URL` set to the stage's backend. Nothing runs in Docker locally:
+the app in the browser talks to the stage's deployed Convex backend, the same
+one `bun sst deploy` serves at `<stage>.<domain>`. Push function changes with
+`bun convex:deploy --stage <stage>` (see below), or run
+`bun convex:deploy --stage <stage> --dev` alongside to push on every save.
 
 Backend functions live in `packages/backend/convex` and reach the web app as
 generated types:

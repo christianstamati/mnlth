@@ -99,16 +99,7 @@ export default $config({
     })
 
     // `sst deploy` brings the backend up empty; push the functions by hand
-    // with `bun convex:deploy --stage <stage>`. In `sst dev` this pane does
-    // it on every save.
-    new sst.x.DevCommand("ConvexDev", {
-      dev: {
-        command: `bun scripts/convex-deploy.ts --stage ${$app.stage} --wait --dev`,
-        directory: ".",
-        title: "convex dev",
-      },
-      environment: { AWS_REGION: settings.region },
-    })
+    // with `bun convex:deploy --stage <stage>`.
 
     // ---- web --------------------------------------------------------------
 
