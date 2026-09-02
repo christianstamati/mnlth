@@ -46,7 +46,7 @@ if (!existsSync(COMPOSE_ENV)) {
   await Bun.write(
     COMPOSE_ENV,
     [
-      "# Written by scripts/backend-up.ts. Local only; deployed stages keep theirs in SSM.",
+      "# Written by scripts/setup-dev.ts. Local only; deployed stages keep theirs in SSM.",
       "INSTANCE_NAME=local",
       `INSTANCE_SECRET=${secret}`,
       "DISABLE_BEACON=true",
@@ -83,7 +83,7 @@ if (freshSecret || !existingKey) {
   await Bun.write(
     BACKEND_ENV,
     [
-      "# Written by scripts/backend-up.ts. Local backend; never a deployed one.",
+      "# Written by scripts/setup-dev.ts. Local backend; never a deployed one.",
       `CONVEX_SELF_HOSTED_URL=${URL_API}`,
       `CONVEX_SELF_HOSTED_ADMIN_KEY=${adminKey}`,
       "",
@@ -94,7 +94,7 @@ if (freshSecret || !existingKey) {
 await Bun.write(
   WEB_ENV,
   [
-    "# Written by scripts/backend-up.ts. `sst dev` overrides this with a cloud stage.",
+    "# Written by scripts/setup-dev.ts. `sst dev` overrides this with a cloud stage.",
     `VITE_CONVEX_URL=${URL_API}`,
     "",
   ].join("\n")

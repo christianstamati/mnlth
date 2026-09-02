@@ -70,7 +70,7 @@ infra/shared.ts            production publishes shared ids to SSM; other stages 
 infra/settings.ts          loads and validates sst.settings.json
 docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
-scripts/backend-up.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
+scripts/setup-dev.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
 ```
@@ -87,7 +87,7 @@ bun run reset      # stop them and wipe the local database and files
 ```
 
 `bun dev` is `turbo dev`. Every `dev` task depends on the backend package's
-`up` task (`turbo.json`), which runs `scripts/backend-up.ts`: it starts
+`up` task (`turbo.json`), which runs `scripts/setup-dev.ts`: it starts
 `docker/docker-compose.yml` with a generated `INSTANCE_SECRET` kept in
 `docker/.env` (gitignored, so the admin key stays valid across restarts),
 mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
