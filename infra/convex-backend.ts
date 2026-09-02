@@ -119,12 +119,14 @@ volumes:
   data:
 `
 
-// The download API builds Caddy with plugins: Route 53 for the DNS-01
-// challenge and S3 for shared certificate storage.
-const CADDY_DOWNLOAD_URL =
-  "https://caddyserver.com/api/download?os=linux&arch=arm64" +
-  "&p=github.com/caddy-dns/route53" +
-  "&p=github.com/ss098/certmagic-s3"
+// Caddy with plugins: Route 53 for the DNS-01 challenge and S3 for shared
+// certificate storage. Caddy's download API compiles that on request, which
+// took seven minutes per boot, so the build is published once as a release
+// asset of https://github.com/christianstamati/caddy-linux-arm64 and the
+// instance only downloads it. Bump both together.
+const CADDY_VERSION = "v2.24.1"
+const CADDY_SHA256 = "c2903e3c4b4f841b7ddf3ee7f0957c92ed04288c213572643b6ed4c23f11b4b9"
+const CADDY_DOWNLOAD_URL = `https://github.com/christianstamati/caddy-linux-arm64/releases/download/${CADDY_VERSION}/caddy-linux-arm64`
 
 // Convex ports, all bound to loopback by the compose file.
 const PORT = { api: 3210, site: 3211, dashboard: 6791 }
@@ -732,9 +734,9 @@ systemctl enable --now docker
 
 # ---- caddy ----
 
-# The download API builds Caddy with the plugins above, so no Go toolchain
-# is needed on the box.
+# Prebuilt with the plugins above; see CADDY_DOWNLOAD_URL.
 curl -fsSL --retry 3 -o /usr/bin/caddy '${CADDY_DOWNLOAD_URL}'
+echo '${CADDY_SHA256}  /usr/bin/caddy' | sha256sum -c --quiet
 chmod +x /usr/bin/caddy
 
 groupadd --system caddy
