@@ -875,12 +875,13 @@ echo >> .env
 ${fetchEnvParameters}
 umask 022
 
-# Pulling from ghcr.io has failed a boot with a TLS handshake timeout. The
-# script runs with -e, so one bad pull must not take the rest down with it.
-for attempt in 1 2 3 4 5; do
+# ghcr.io has had episodes where a quarter of TLS handshakes hang past
+# Docker's 10s limit, for tens of minutes at a time. The script runs with
+# -e, so pull separately and keep at it: up to 20 minutes.
+for attempt in $(seq 1 60); do
   docker compose pull --quiet && break
-  echo "image pull attempt $attempt failed; retrying"
-  sleep 15
+  echo "image pull attempt $attempt failed; retrying in 20s"
+  sleep 20
 done
 docker compose up -d
 
