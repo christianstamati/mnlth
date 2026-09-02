@@ -6,7 +6,7 @@ export function getRouter() {
   const convexUrl = import.meta.env.VITE_CONVEX_URL
   if (!convexUrl) {
     throw new Error(
-      "Missing VITE_CONVEX_URL. Start the local stack with `bun sst dev`, which runs the self-hosted Convex backend on http://127.0.0.1:3210."
+      "Missing VITE_CONVEX_URL. Run the app with `bun sst dev --stage <stage>`, which sets it to that stage's Convex backend."
     )
   }
 

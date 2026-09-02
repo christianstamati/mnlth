@@ -1,8 +1,9 @@
 /// <reference path="../.sst/platform/config.d.ts" />
 
 /**
- * The two resources production owns and every other stage borrows: the VPC
- * and the bucket Caddy keeps the wildcard certificate in.
+ * The resources production owns and every other stage borrows: the VPC, the
+ * bucket Caddy keeps the wildcard certificate in, and the CloudFront
+ * distribution (`sst.aws.Router`) every stage's web app hangs off.
  *
  * Production publishes their ids to SSM as part of its own stack; the other
  * stages read them back when they deploy. Nothing is pinned by hand, so a
@@ -16,11 +17,13 @@
 export interface SharedIds {
   vpcId: string
   certificateBucket: string
+  routerDistributionId: string
 }
 
 const parameterNames = () => ({
   vpcId: `/${$app.name}/shared/vpc-id`,
   certificateBucket: `/${$app.name}/shared/certificate-bucket`,
+  routerDistributionId: `/${$app.name}/shared/router-distribution-id`,
 })
 
 /**
@@ -30,6 +33,7 @@ const parameterNames = () => ({
 export function publishSharedIds(ids: {
   vpcId: $util.Input<string>
   certificateBucket: $util.Input<string>
+  routerDistributionId: $util.Input<string>
 }) {
   const names = parameterNames()
 
@@ -53,6 +57,15 @@ export function publishSharedIds(ids: {
     value: ids.certificateBucket,
     overwrite: true,
   })
+
+  new aws.ssm.Parameter("SharedRouterDistributionId", {
+    name: names.routerDistributionId,
+    description:
+      "The CloudFront distribution every stage's web app is routed through. Written by production.",
+    type: "String",
+    value: ids.routerDistributionId,
+    overwrite: true,
+  })
 }
 
 /**
@@ -62,11 +75,12 @@ export function publishSharedIds(ids: {
  */
 export async function readSharedIds(): Promise<SharedIds> {
   const names = parameterNames()
-  const [vpcId, certificateBucket] = await Promise.all([
+  const [vpcId, certificateBucket, routerDistributionId] = await Promise.all([
     read(names.vpcId),
     read(names.certificateBucket),
+    read(names.routerDistributionId),
   ])
-  return { vpcId, certificateBucket }
+  return { vpcId, certificateBucket, routerDistributionId }
 }
 
 async function read(name: string): Promise<string> {
@@ -75,8 +89,8 @@ async function read(name: string): Promise<string> {
   } catch (cause) {
     throw new Error(
       `Could not read ${name} from SSM. Deploy the production stage first: ` +
-        "it creates the VPC and the certificate bucket, and publishes their " +
-        "ids there for every other stage to read.",
+        "it creates the VPC, the certificate bucket and the router, and " +
+        "publishes their ids there for every other stage to read.",
       { cause }
     )
   }

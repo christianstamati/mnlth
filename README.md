@@ -20,31 +20,24 @@ To use the components in your app, import them from the `ui` package.
 import { Button } from "@workspace/ui/components/button";
 ```
 
-## Local development (self-hosted Convex)
-
-`bun sst:dev` is the only command needed. SST starts three things side by side:
-
-| Process           | What it runs                                              |
-| ----------------- | --------------------------------------------------------- |
-| `convex stack`    | `docker compose up` — Postgres, the Convex backend, the dashboard |
-| `convex dev`      | `scripts/convex-dev.ts` — pushes `packages/backend/convex` on save |
-| `Web`             | Vite on http://localhost:3000                             |
-
-- Backend: http://127.0.0.1:3210 (HTTP actions on `:3211`)
-- Dashboard: http://127.0.0.1:6791
-- Postgres: `localhost:5432` (`postgres` / `postgres`, database `convex_self_hosted`)
-
-The backend mints its own admin key, so nothing is checked in. On the first run
-`scripts/convex-dev.ts` waits for the container, calls `generate_admin_key.sh`,
-and writes `packages/backend/.env.local`:
+## Local development
 
 ```bash
-CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3210
-CONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|<generated>
+bun sst dev --stage <stage>
 ```
 
-Delete that file to mint a fresh key. To wipe the deployment entirely,
-`docker compose down -v` — the data lives in the `postgres-data` volume.
+`sst dev` deploys the stage (its EC2 backend included, so the first run takes
+a few minutes) and then runs two processes side by side against it:
+
+| Process      | What it runs                                                          |
+| ------------ | --------------------------------------------------------------------- |
+| `Web`        | Vite on http://localhost:3000, `VITE_CONVEX_URL` set to the stage's backend |
+| `convex dev` | `scripts/convex-deploy.ts --dev`: pushes `packages/backend/convex` on save |
+
+Nothing runs in Docker locally: the app in the browser talks to the stage's
+deployed Convex backend, the same one `bun sst deploy` serves at
+`<stage>.<domain>`. On a stage's first run the `convex dev` pane waits for
+the instance to publish its admin key, a few minutes into the boot.
 
 Backend functions live in `packages/backend/convex` and reach the web app as
 generated types:
@@ -68,17 +61,19 @@ rather than over each other.
 
 ## Deploying (SST)
 
-Two things ship per stage, both under `fullstackaws.dev`:
+Two things ship per stage, both under the domain in `sst.settings.json`:
 
 | | Hostname | What runs |
 | --- | --- | --- |
-| `apps/web` | apex for production, `<stage>.` otherwise | TanStack Start on a streaming Lambda behind CloudFront |
-| Convex | `api.` · `site.` · `dashboard.` | one EC2 instance behind Caddy, on RDS Postgres and S3 |
+| `apps/web` | apex for production, `<stage>.` otherwise | TanStack Start on a streaming Lambda behind one shared CloudFront distribution |
+| Convex | `api.` · `site.` · `dashboard.`, prefixed `<stage>-` off production | one EC2 instance behind Caddy; storage and database per `sst.settings.json` |
 
 The frontend needs Nitro's `aws-lambda` preset, set in `apps/web/vite.config.ts`.
 
-Production owns the shared VPC and the Postgres server, so it deploys first and
-is removed last:
+Production owns the shared VPC, the certificate bucket and the CloudFront
+distribution (an `sst.aws.Router` with a `*.<domain>` alias, which is how every
+other stage gets its own subdomain without a distribution of its own). It
+publishes their ids to SSM, so it deploys first and is removed last:
 
 ```bash
 bun sst:dev                          # sst dev — app on http://localhost:3000
@@ -116,28 +111,23 @@ time.
 
 ### Convex functions
 
-`sst deploy` brings the backend up but pushes nothing into it — the frontend
-would query a deployment with an empty `api`. Pushing needs the two variables
-the Convex CLI always needs for a self-hosted deployment:
+The backend comes up empty; the functions in `packages/backend/convex` have
+to be pushed into it. The Convex CLI needs two variables for a self-hosted
+deployment, `CONVEX_SELF_HOSTED_URL` and `CONVEX_SELF_HOSTED_ADMIN_KEY`, and
+the key can only come from the running backend: the instance mints it and
+publishes it to SSM a few minutes into its first boot.
+
+`scripts/convex-deploy.ts` reads the URL from `/mnlth/<stage>/convex/url` and
+the key from `/mnlth/<stage>/convex/admin-key` and runs `convex deploy`. The
+stack runs it as part of `sst deploy` (a `command.local.Command` that
+re-triggers when the convex sources or the backend URL change, and waits for
+the key on a first deploy), so a deploy ends with the functions live. It can
+also be run by hand:
 
 ```bash
-CONVEX_SELF_HOSTED_URL
-CONVEX_SELF_HOSTED_ADMIN_KEY
+bun convex:deploy --stage production          # fails fast if the key is not published yet
+bun convex:deploy --stage production --wait   # polls for it, up to 15 minutes
 ```
-
-Locally `scripts/convex-dev.ts` mints the key from the container and caches it
-in `packages/backend/.env.local`. On a deployed stage the key can only come from
-the running backend, so `bootstrap.sh` publishes it to SSM once the backend
-reports healthy, and `scripts/convex-deploy.ts` reads it back — the URL from
-`/mnlth/<stage>/convex/url`, the key from `/mnlth/<stage>/convex/admin-key`:
-
-```bash
-bun convex:deploy --stage production
-```
-
-On a first deploy the key parameter holds a placeholder until the backend is
-healthy, which is a few minutes after `sst deploy` returns; the script says so
-rather than pushing at nothing.
 
 The stage's `INSTANCE_SECRET` is generated once by `sst.config.ts` and kept in
 SSM, so a key stays valid across instance replacements — without it the backend
@@ -164,8 +154,8 @@ those are inlined into the client bundle and served to every visitor.
 The backend keeps snapshots, function modules, user files and search indexes in
 five per-stage S3 buckets rather than on the instance's volume, so replacing the
 instance costs none of it. The bucket names and an access key scoped to those
-five buckets reach the box through SSM, where userData sources them and
-`bootstrap.sh` passes them on — nothing sensitive lands in userData itself,
+five buckets reach the box through SSM, which userData reads at boot —
+nothing sensitive lands in userData itself,
 which is readable by anyone holding `ec2:DescribeInstanceAttribute`.
 
 The S3 variables are optional in the stack repo: unset, the backend keeps

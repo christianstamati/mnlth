@@ -260,6 +260,7 @@ export class ConvexBackend extends $util.ComponentResource {
   private readonly role: aws.iam.Role
   private readonly instanceSecretParameter: aws.ssm.Parameter
   private readonly _adminKeyParameter: aws.ssm.Parameter
+  private readonly _urlParameter: aws.ssm.Parameter
   private readonly database?: sst.aws.Postgres | sst.aws.Mysql
   private readonly storageBuckets?: Record<
     keyof typeof STORAGE_BUCKETS,
@@ -392,6 +393,14 @@ export class ConvexBackend extends $util.ComponentResource {
         value: PENDING,
       },
       { parent, ignoreChanges: ["value"] }
+    )
+
+    // The API URL, so `scripts/convex-deploy.ts` can find the deployment
+    // from the stage name alone.
+    this._urlParameter = new aws.ssm.Parameter(
+      `${name}Url`,
+      { name: `${parameterPrefix}/url`, type: "String", value: this.url },
+      { parent }
     )
 
     // ---- database ---------------------------------------------------------
