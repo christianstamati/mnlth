@@ -875,6 +875,13 @@ echo >> .env
 ${fetchEnvParameters}
 umask 022
 
+# Pulling from ghcr.io has failed a boot with a TLS handshake timeout. The
+# script runs with -e, so one bad pull must not take the rest down with it.
+for attempt in 1 2 3 4 5; do
+  docker compose pull --quiet && break
+  echo "image pull attempt $attempt failed; retrying"
+  sleep 15
+done
 docker compose up -d
 
 # Caddy after the stack, so the proxy targets exist when it starts. Compose

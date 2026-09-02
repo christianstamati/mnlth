@@ -5,5 +5,11 @@
   "removal": {
     "production": "remove",
     "*": "remove"
+  },
+  "database": {
+    "*": "sqlite"
+  },
+  "storage": {
+    "*": "volume"
   }
 }
