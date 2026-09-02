@@ -101,9 +101,9 @@ export default $config({
       prefix: isProd ? "" : `${$app.stage}-`,
       // A stable address for production. Other stages follow the instance.
       elasticIp: isProd,
-      // Installed for ec2-user at launch and opens port 22 to everyone.
-      // Without it, SSH is admitted from EC2 Instance Connect only.
-      keyPairId: "key-07ece9db1f187d7dd",
+      // No key pair: shell access is `aws ssm start-session` or EC2
+      // Instance Connect (see the README). Setting `keyPairId` to an
+      // existing pair installs it for ec2-user and opens port 22 to all.
       // Per stage in sst.settings.json.
       storage: storageFor($app.stage),
       database: databaseFor($app.stage),
