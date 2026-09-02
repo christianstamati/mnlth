@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/christianstamati/mnlth/compare/v1.0.0...v1.0.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **ci:** post releases to Slack from the release workflow ([b07fe9b](https://github.com/christianstamati/mnlth/commit/b07fe9b533a1de0e318fcce0bb9fda1525a526b2))
+
 ## 1.0.0 (2026-09-02)
 
 
