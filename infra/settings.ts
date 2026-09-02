@@ -1,11 +1,16 @@
 /**
  * Per-deployment settings that are not code: read from `sst.settings.json` at the
- * repo root. Kept out of `sst.config.ts` so the domain, region and lifecycle
- * policy change without touching the stack.
+ * repo root. Kept out of `sst.config.ts` so the domain, region and per-stage
+ * choices change without touching the stack.
  */
 import raw from "../sst.settings.json"
 
 export type Removal = "remove" | "retain" | "retain-all"
+export type Storage = "volume" | "s3"
+export type Database = "sqlite" | "postgres" | "mysql"
+
+/** One value for every stage, or a map keyed by stage with `*` as fallback. */
+export type PerStage<T> = T | Record<string, T>
 
 export interface SstSettings {
   /** Base domain every stage hangs off, e.g. `fullstackaws.dev`. */
@@ -14,14 +19,17 @@ export interface SstSettings {
   region: string
   /** Stages whose resources are protected from deletion. */
   protect: string[]
-  /**
-   * What `sst remove` does with resources, either one policy for every stage
-   * or a map keyed by stage, with `*` as the fallback.
-   */
-  removal: Removal | Record<string, Removal>
+  /** What `sst remove` does with resources. */
+  removal: PerStage<Removal>
+  /** Where the Convex backend keeps files: the instance volume or S3. */
+  storage: PerStage<Storage>
+  /** Where the Convex backend keeps its tables: SQLite on the volume or RDS. */
+  database: PerStage<Database>
 }
 
 const REMOVALS: Removal[] = ["remove", "retain", "retain-all"]
+const STORAGES: Storage[] = ["volume", "s3"]
+const DATABASES: Database[] = ["sqlite", "postgres", "mysql"]
 
 function check(data: unknown): SstSettings {
   const d = data as Partial<SstSettings>
@@ -29,15 +37,22 @@ function check(data: unknown): SstSettings {
   if (typeof d.region !== "string" || !d.region) fail("region", "an AWS region")
   if (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string"))
     fail("protect", "a list of stage names")
-  if (typeof d.removal === "string") {
-    if (!REMOVALS.includes(d.removal)) fail("removal", REMOVALS.join(" | "))
-  } else if (d.removal && typeof d.removal === "object") {
-    for (const [stage, value] of Object.entries(d.removal))
-      if (!REMOVALS.includes(value)) fail(`removal.${stage}`, REMOVALS.join(" | "))
-  } else {
-    fail("removal", `${REMOVALS.join(" | ")} or a map of stage to one of those`)
-  }
+  checkPerStage("removal", d.removal, REMOVALS)
+  checkPerStage("storage", d.storage, STORAGES)
+  checkPerStage("database", d.database, DATABASES)
   return d as SstSettings
+}
+
+function checkPerStage<T extends string>(key: string, value: unknown, allowed: T[]) {
+  const expected = allowed.join(" | ")
+  if (typeof value === "string") {
+    if (!allowed.includes(value as T)) fail(key, expected)
+  } else if (value && typeof value === "object") {
+    for (const [stage, v] of Object.entries(value))
+      if (!allowed.includes(v as T)) fail(`${key}.${stage}`, expected)
+  } else {
+    fail(key, `${expected} or a map of stage to one of those`)
+  }
 }
 
 function fail(key: string, expected: string): never {
@@ -46,6 +61,13 @@ function fail(key: string, expected: string): never {
 
 export const settings = check(raw)
 
+/** Resolve a per-stage setting: the stage's own entry, else `*`, else `fallback`. */
+export function forStage<T>(value: PerStage<T>, stage: string, fallback: T): T {
+  if (typeof value !== "object" || value === null) return value as T
+  const map = value as Record<string, T>
+  return map[stage] ?? map["*"] ?? fallback
+}
+
 /** Whether `stage` is protected from deletion. */
 export function isProtected(stage: string): boolean {
   return settings.protect.includes(stage)
@@ -53,6 +75,15 @@ export function isProtected(stage: string): boolean {
 
 /** The removal policy for `stage`. */
 export function removalFor(stage: string): Removal {
-  if (typeof settings.removal === "string") return settings.removal
-  return settings.removal[stage] ?? settings.removal["*"] ?? "retain"
+  return forStage(settings.removal, stage, "retain")
+}
+
+/** The Convex file storage for `stage`. */
+export function storageFor(stage: string): Storage {
+  return forStage(settings.storage, stage, "volume")
+}
+
+/** The Convex database engine for `stage`. */
+export function databaseFor(stage: string): Database {
+  return forStage(settings.database, stage, "sqlite")
 }

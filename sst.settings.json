@@ -3,7 +3,15 @@
   "region": "eu-central-1",
   "protect": [],
   "removal": {
-    "production": "retain",
+    "production": "remove",
     "*": "remove"
+  },
+  "storage": {
+    "production": "s3",
+    "*": "volume"
+  },
+  "database": {
+    "production": "mysql",
+    "*": "sqlite"
   }
 }

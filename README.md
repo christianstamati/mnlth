@@ -97,7 +97,9 @@ domain, the region, and the lifecycle policy.
   "domain": "fullstackaws.dev",
   "region": "eu-central-1",
   "protect": ["production"],
-  "removal": { "production": "retain", "*": "remove" }
+  "removal": { "production": "retain", "*": "remove" },
+  "storage": { "production": "s3", "*": "volume" },
+  "database": { "production": "mysql", "*": "sqlite" }
 }
 ```
 
@@ -106,8 +108,10 @@ replace a resource on a protected stage fails, so leave it empty while a
 stage's instance name or database is still changing. `removal` is what
 `sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
 and any RDS instance) or `retain-all`, given as one policy or as a map keyed
-by stage with `*` as the fallback. `infra/settings.ts` validates the file at
-load time.
+by stage with `*` as the fallback. `storage` (`volume` | `s3`) and `database`
+(`sqlite` | `postgres` | `mysql`) pick the Convex backend's file storage and
+database engine the same way. `infra/settings.ts` validates the file at load
+time.
 
 ### Convex functions
 

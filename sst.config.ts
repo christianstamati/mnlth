@@ -12,7 +12,9 @@ export default $config({
   async app(input) {
     // Domain, region and the per-stage lifecycle policy live in
     // `sst.settings.json`. SST forbids top-level imports in this file.
-    const { isProtected, removalFor, settings } = await import("./infra/settings")
+    const { isProtected, removalFor, settings } = await import(
+      "./infra/settings"
+    )
 
     return {
       name: "mnlth",
@@ -35,7 +37,7 @@ export default $config({
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
-    const { settings } = await import("./infra/settings")
+    const { settings, storageFor, databaseFor } = await import("./infra/settings")
 
     const isProd = $app.stage === "production"
 
@@ -75,8 +77,9 @@ export default $config({
       prefix: isProd ? "" : `${$app.stage}-`,
       // A stable address for production. Other stages follow the instance.
       elasticIp: isProd,
-      storage: isProd ? "s3" : "volume",
-      database: isProd ? "postgres" : "sqlite",
+      // Per stage in sst.settings.json.
+      storage: storageFor($app.stage),
+      database: databaseFor($app.stage),
     })
 
     return {
