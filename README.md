@@ -92,9 +92,9 @@ bun run reset      # stop them and wipe the local database and files
 `docker/.env` (gitignored, so the admin key stays valid across restarts),
 mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
 writes `VITE_CONVEX_URL=http://127.0.0.1:3210` to `apps/web/.env.local`.
-Turbo then runs `convex dev` and Vite, one TUI pane each; switch with the
-arrow keys. The dashboard is at http://127.0.0.1:6791 and asks for that key
-on first open.
+It also puts the key in `docker/.env` as `NEXT_PUBLIC_ADMIN_KEY`, so the
+dashboard at http://127.0.0.1:6791 signs in by itself. Turbo then runs
+`convex dev` and Vite, one TUI pane each; switch with the arrow keys.
 
 ### A personal stage in AWS
 

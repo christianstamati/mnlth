@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url"
  * Writes:
  *   packages/backend/.env.local   CONVEX_SELF_HOSTED_URL, CONVEX_SELF_HOSTED_ADMIN_KEY
  *   apps/web/.env.local           VITE_CONVEX_URL
+ *   docker/.env                   NEXT_PUBLIC_ADMIN_KEY, so the dashboard signs in by itself
  *
  * Vite gives real environment variables precedence over .env files, so
  * `sst dev`, which sets VITE_CONVEX_URL to a cloud stage, still wins.
@@ -66,7 +67,8 @@ const existingKey = existsSync(BACKEND_ENV)
     )?.[1]
   : undefined
 
-if (freshSecret || !existingKey) {
+let adminKey = existingKey
+if (freshSecret || !adminKey) {
   // The script reads INSTANCE_NAME and INSTANCE_SECRET from the container's
   // environment. Its last line is the key.
   const out = await compose(
@@ -75,7 +77,7 @@ if (freshSecret || !existingKey) {
     "backend",
     "./generate_admin_key.sh"
   ).text()
-  const adminKey = out.trim().split("\n").at(-1) ?? ""
+  adminKey = out.trim().split("\n").at(-1) ?? ""
   if (!adminKey.includes("|")) {
     console.error(`Unexpected output from generate_admin_key.sh:\n${out}`)
     process.exit(1)
@@ -91,6 +93,21 @@ if (freshSecret || !existingKey) {
   )
 }
 
+// The dashboard signs in with NEXT_PUBLIC_ADMIN_KEY from its environment.
+// Put the key in the compose .env once; the second `up` recreates only the
+// dashboard container, and only when that line changed.
+const composeEnv = await Bun.file(COMPOSE_ENV).text()
+const keyLine = `NEXT_PUBLIC_ADMIN_KEY=${adminKey}`
+if (!composeEnv.split("\n").includes(keyLine)) {
+  const kept = composeEnv
+    .split("\n")
+    .filter((line) => !line.startsWith("NEXT_PUBLIC_ADMIN_KEY="))
+    .join("\n")
+    .replace(/\n*$/, "\n")
+  await Bun.write(COMPOSE_ENV, `${kept}${keyLine}\n`)
+  await compose("up", "-d", "--wait")
+}
+
 await Bun.write(
   WEB_ENV,
   [
@@ -101,6 +118,4 @@ await Bun.write(
 )
 
 console.log(`Backend    ${URL_API}`)
-console.log(
-  "Dashboard  http://127.0.0.1:6791  (admin key in packages/backend/.env.local)"
-)
+console.log("Dashboard  http://127.0.0.1:6791")
