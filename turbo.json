@@ -11,11 +11,11 @@
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
-    "up": {
+    "setup-dev": {
       "cache": false
     },
     "dev": {
-      "dependsOn": ["@workspace/backend#up"],
+      "dependsOn": ["@workspace/backend#setup-dev"],
       "cache": false,
       "persistent": true
     }

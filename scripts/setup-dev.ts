@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 /**
  * Start the local Convex backend and dashboard in Docker and hand the
- * clients what they need to reach it. Runs as the `up` task of
+ * clients what they need to reach it. Runs as the `setup-dev` task of
  * packages/backend, which every `dev` task depends on (turbo.json), so
  * `bun dev` is enough.
  *

@@ -87,7 +87,7 @@ bun run reset      # stop them and wipe the local database and files
 ```
 
 `bun dev` is `turbo dev`. Every `dev` task depends on the backend package's
-`up` task (`turbo.json`), which runs `scripts/setup-dev.ts`: it starts
+`setup-dev` task (`turbo.json`), which runs `scripts/setup-dev.ts`: it starts
 `docker/docker-compose.yml` with a generated `INSTANCE_SECRET` kept in
 `docker/.env` (gitignored, so the admin key stays valid across restarts),
 mints an admin key into `packages/backend/.env.local` for the Convex CLI, and
