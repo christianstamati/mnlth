@@ -4,7 +4,8 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 /**
  * The whole app on this machine, no AWS: the self-hosted Convex backend and
- * dashboard in Docker, the functions pushed on save, and Vite on :3000.
+ * dashboard in Docker, then `turbo dev` for the functions push on save and
+ * Vite on :3000, one TUI pane each.
  *
  *   bun local            # start everything
  *   bun local --reset    # wipe the local database and files first
@@ -25,7 +26,6 @@ const DOCKER_DIR = join(ROOT, "docker")
 const COMPOSE = join(DOCKER_DIR, "docker-compose.yml")
 const COMPOSE_ENV = join(DOCKER_DIR, ".env")
 const BACKEND_DIR = join(ROOT, "packages", "backend")
-const WEB_DIR = join(ROOT, "apps", "web")
 const URL_API = "http://127.0.0.1:3210"
 
 const args = process.argv.slice(2)
@@ -98,22 +98,15 @@ console.error("Web        http://localhost:3000")
 
 // ---- functions + web ------------------------------------------------------
 
-const env = { ...process.env, VITE_CONVEX_URL: URL_API }
-const procs = [
-  Bun.spawn(["bunx", "convex", "dev"], {
-    cwd: BACKEND_DIR,
-    env,
-    stdio: ["inherit", "inherit", "inherit"],
-  }),
-  Bun.spawn(["bun", "run", "dev"], {
-    cwd: WEB_DIR,
-    env,
-    stdio: ["inherit", "inherit", "inherit"],
-  }),
-]
-const stop = () => {
-  for (const p of procs) p.kill()
-}
+// Turbo runs both `dev` tasks, `convex dev` in packages/backend and Vite in
+// apps/web, in its TUI: one pane each, switch with the arrow keys. It passes
+// VITE_CONVEX_URL through (turbo.json globalPassThroughEnv).
+const turbo = Bun.spawn(["bunx", "turbo", "dev"], {
+  cwd: ROOT,
+  env: { ...process.env, VITE_CONVEX_URL: URL_API },
+  stdio: ["inherit", "inherit", "inherit"],
+})
+const stop = () => turbo.kill()
 process.on("SIGINT", stop)
 process.on("SIGTERM", stop)
-process.exit(Math.max(...(await Promise.all(procs.map((p) => p.exited)))))
+process.exit(await turbo.exited)

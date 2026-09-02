@@ -89,8 +89,9 @@ bun local --down     # stop the containers
 `scripts/local.ts` starts `docker/docker-compose.yml` with a generated
 `INSTANCE_SECRET` kept in `docker/.env` (gitignored, so the admin key stays
 valid across restarts), mints an admin key into `packages/backend/.env.local`
-for the Convex CLI, then runs `convex dev` and Vite with
-`VITE_CONVEX_URL=http://127.0.0.1:3210`. The dashboard is at
+for the Convex CLI, then runs `turbo dev` with
+`VITE_CONVEX_URL=http://127.0.0.1:3210`: one TUI pane for `convex dev`, one
+for Vite, switch with the arrow keys. The dashboard is at
 http://127.0.0.1:6791 and asks for that key on first open.
 
 ### A personal stage in AWS
