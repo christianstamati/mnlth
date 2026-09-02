@@ -8,12 +8,12 @@
  *   bun sst deploy --stage dev          ->  dev-api.fullstackaws.dev
  */
 
-// Domain, region and the per-stage lifecycle policy live in `sst.settings.json`.
-// This import is static because `app()` runs before the SST globals exist.
-import { settings, isProtected, removalFor } from "./infra/settings"
-
 export default $config({
-  app(input) {
+  async app(input) {
+    // Domain, region and the per-stage lifecycle policy live in
+    // `sst.settings.json`. SST forbids top-level imports in this file.
+    const { isProtected, removalFor, settings } = await import("./infra/settings")
+
     return {
       name: "mnlth",
       // `removal` decides what `sst remove` keeps: SST's default "retain"
@@ -35,6 +35,7 @@ export default $config({
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
+    const { settings } = await import("./infra/settings")
 
     const isProd = $app.stage === "production"
 
@@ -75,7 +76,7 @@ export default $config({
       // A stable address for production. Other stages follow the instance.
       elasticIp: isProd,
       storage: isProd ? "s3" : "volume",
-      database: isProd ? "mysql" : "sqlite",
+      database: isProd ? "postgres" : "sqlite",
     })
 
     return {
