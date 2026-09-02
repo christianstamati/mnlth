@@ -8,6 +8,9 @@ A [Convex](https://docs.convex.dev/self-hosting) backend and dashboard, run loca
 
 ## Start the stack
 
+This is the same compose file `index.ts` embeds into the EC2 instance, so what
+runs locally is what runs deployed. From this directory:
+
 ```bash
 docker compose up -d
 ```
@@ -98,8 +101,8 @@ Read the recorded result from the host:
 
 ```bash
 docker compose ps                       # STATUS shows "Up 4 minutes (healthy)"
-docker inspect self-hosted-convex-backend-1 --format '{{.State.Health.Status}}'
-docker inspect self-hosted-convex-backend-1 --format '{{json .State.Health.Log}}'
+docker inspect convex-backend-backend-1 --format '{{.State.Health.Status}}'
+docker inspect convex-backend-backend-1 --format '{{json .State.Health.Log}}'
 ```
 
 The status is `starting`, `healthy`, or `unhealthy`, and the log keeps the last five

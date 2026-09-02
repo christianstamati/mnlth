@@ -1,4 +1,4 @@
-/// <reference path="../.sst/platform/config.d.ts" />
+/// <reference path="../../.sst/platform/config.d.ts" />
 
 /**
  * A self-hosted Convex backend on one EC2 instance.
@@ -14,7 +14,7 @@
  *     hostname to a loopback port. Caddy keeps the certificate in a shared S3
  *     bucket, so it is issued once and reused by every stage and every
  *     replacement instance; renewal happens once for all of them too.
- *   - the compose stack from `self-hosted-convex/docker-compose.yml`, embedded
+ *   - the compose stack from `docker-compose.yml` next to this file, embedded
  *     into userData so what boots on the box is what was tested locally
  *   - two SSM SecureString parameters: the instance secret (stable across
  *     host replacements, so admin keys keep working) and the admin key the
@@ -43,7 +43,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 const COMPOSE_PLUGIN_VERSION = "v5.5.0"
-const COMPOSE_FILE = "self-hosted-convex/docker-compose.yml"
+const COMPOSE_FILE = "infra/convex-backend/docker-compose.yml"
 
 // The download API builds Caddy with plugins: Route 53 for the DNS-01
 // challenge and S3 for shared certificate storage.
