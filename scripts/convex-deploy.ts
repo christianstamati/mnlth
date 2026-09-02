@@ -8,7 +8,8 @@
  * an admin key. Both live in SSM, written by the stack (`/<app>/<stage>/convex/url`)
  * and by the instance a few minutes into its first boot (`.../admin-key`).
  * `--wait` polls for the key instead of giving up while the placeholder is
- * still there. `--dev` runs `convex dev` (watch and push on save) instead of
+ * still there, then for the backend to answer over TLS: the key lands in SSM
+ * before Caddy has its certificate, so a push right after it fails on fetch. `--dev` runs `convex dev` (watch and push on save) instead of
  * a one-shot `convex deploy`; `sst dev` uses that.
  */
 import { $ } from "bun"
@@ -76,6 +77,40 @@ if (adminKey === PENDING) {
     await Bun.sleep(POLL_SECONDS * 1000)
     process.stderr.write(".")
     adminKey = await parameter(`${prefix}/admin-key`).catch(die)
+  }
+  process.stderr.write("\n")
+}
+
+// The key can be published a minute or two before the box serves HTTPS:
+// Caddy still has to finish the DNS-01 challenge and the records have to
+// propagate. Same budget as the key.
+async function ready(): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/version`, {
+      signal: AbortSignal.timeout(10_000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+if (!(await ready())) {
+  if (!wait) {
+    console.error(`${url} is not answering yet. Retry shortly, or pass --wait.`)
+    process.exit(1)
+  }
+  const deadline = Date.now() + WAIT_SECONDS * 1000
+  process.stderr.write(`Waiting for ${url} to answer`)
+  while (!(await ready())) {
+    if (Date.now() > deadline) {
+      console.error(
+        `\nGave up after ${WAIT_SECONDS / 60} minutes. Check Caddy on the instance.`
+      )
+      process.exit(1)
+    }
+    await Bun.sleep(POLL_SECONDS * 1000)
+    process.stderr.write(".")
   }
   process.stderr.write("\n")
 }
