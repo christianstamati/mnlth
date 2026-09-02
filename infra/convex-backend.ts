@@ -123,10 +123,9 @@ volumes:
 // certificate storage. Caddy's download API compiles that on request, which
 // took seven minutes per boot, so the build is published once as a release
 // asset of https://github.com/christianstamati/caddy-linux-arm64 and the
-// instance only downloads it. Bump both together.
-const CADDY_VERSION = "v2.24.1"
-const CADDY_SHA256 = "c2903e3c4b4f841b7ddf3ee7f0957c92ed04288c213572643b6ed4c23f11b4b9"
-const CADDY_DOWNLOAD_URL = `https://github.com/christianstamati/caddy-linux-arm64/releases/download/${CADDY_VERSION}/caddy-linux-arm64`
+// instance only downloads the latest one.
+const CADDY_DOWNLOAD_URL =
+  "https://github.com/christianstamati/caddy-linux-arm64/releases/latest/download/caddy-linux-arm64"
 
 // Convex ports, all bound to loopback by the compose file.
 const PORT = { api: 3210, site: 3211, dashboard: 6791 }
@@ -307,8 +306,20 @@ export class ConvexBackend extends $util.ComponentResource {
       name: $interpolate`com.amazonaws.${region}.ec2-instance-connect`,
     })
     const ssh = args.keyPairId
-      ? { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"], description: "SSH: key pair" }
-      : { protocol: "tcp", fromPort: 22, toPort: 22, prefixListIds: [instanceConnect.id], description: "SSH: EC2 Instance Connect" }
+      ? {
+          protocol: "tcp",
+          fromPort: 22,
+          toPort: 22,
+          cidrBlocks: ["0.0.0.0/0"],
+          description: "SSH: key pair",
+        }
+      : {
+          protocol: "tcp",
+          fromPort: 22,
+          toPort: 22,
+          prefixListIds: [instanceConnect.id],
+          description: "SSH: EC2 Instance Connect",
+        }
 
     this.securityGroup = new aws.ec2.SecurityGroup(
       `${name}SecurityGroup`,
@@ -316,11 +327,25 @@ export class ConvexBackend extends $util.ComponentResource {
         vpcId: args.vpc.id,
         description: "Convex self-hosted: HTTP/HTTPS via Caddy",
         ingress: [
-          { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"], description: "HTTP: redirect to HTTPS" },
-          { protocol: "tcp", fromPort: 443, toPort: 443, cidrBlocks: ["0.0.0.0/0"], description: "HTTPS" },
+          {
+            protocol: "tcp",
+            fromPort: 80,
+            toPort: 80,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "HTTP: redirect to HTTPS",
+          },
+          {
+            protocol: "tcp",
+            fromPort: 443,
+            toPort: 443,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "HTTPS",
+          },
           ssh,
         ],
-        egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+        egress: [
+          { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+        ],
         ...args.transform?.securityGroup,
       },
       { parent }
@@ -348,7 +373,11 @@ export class ConvexBackend extends $util.ComponentResource {
     // admin key at once.
     this.instanceSecretParameter = new aws.ssm.Parameter(
       `${name}InstanceSecret`,
-      { name: `${parameterPrefix}/instance-secret`, type: "SecureString", value: PENDING },
+      {
+        name: `${parameterPrefix}/instance-secret`,
+        type: "SecureString",
+        value: PENDING,
+      },
       { parent, ignoreChanges: ["value"] }
     )
 
@@ -357,7 +386,11 @@ export class ConvexBackend extends $util.ComponentResource {
     // backend answers.
     this._adminKeyParameter = new aws.ssm.Parameter(
       `${name}AdminKey`,
-      { name: `${parameterPrefix}/admin-key`, type: "SecureString", value: PENDING },
+      {
+        name: `${parameterPrefix}/admin-key`,
+        type: "SecureString",
+        value: PENDING,
+      },
       { parent, ignoreChanges: ["value"] }
     )
 
@@ -370,9 +403,12 @@ export class ConvexBackend extends $util.ComponentResource {
     // The box lands in the first public subnet. A managed database is pinned
     // to the same availability zone: neither is replicated across zones, so
     // spreading them adds latency and cross-zone transfer fees for nothing.
-    const instanceSubnetId = args.vpc.publicSubnets.apply((subnets) => subnets[0])
-    const availabilityZone = aws.ec2.getSubnetOutput({ id: instanceSubnetId })
-      .availabilityZone
+    const instanceSubnetId = args.vpc.publicSubnets.apply(
+      (subnets) => subnets[0]
+    )
+    const availabilityZone = aws.ec2.getSubnetOutput({
+      id: instanceSubnetId,
+    }).availabilityZone
 
     const database =
       typeof args.database === "string"
@@ -383,7 +419,8 @@ export class ConvexBackend extends $util.ComponentResource {
       const { engine, ...databaseArgs } = database
       // Both SST components take the same transform shape for the instance.
       type InstanceTransform = NonNullable<sst.aws.MysqlArgs["transform"]>
-      const transform = (databaseArgs as { transform?: InstanceTransform }).transform
+      const transform = (databaseArgs as { transform?: InstanceTransform })
+        .transform
       const databaseTransform: InstanceTransform = {
         ...transform,
         instance: (instanceArgs, opts, resourceName) => {
@@ -432,7 +469,10 @@ export class ConvexBackend extends $util.ComponentResource {
       // require_secure_transport off, so it connects in the clear.
       const lines =
         engine === "postgres"
-          ? [$interpolate`POSTGRES_URL=${url}`, "PG_CA_FILE=/convex/certs/rds-ca.pem"]
+          ? [
+              $interpolate`POSTGRES_URL=${url}`,
+              "PG_CA_FILE=/convex/certs/rds-ca.pem",
+            ]
           : [$interpolate`MYSQL_URL=${url}`, "DO_NOT_REQUIRE_SSL=1"]
 
       envParameters.push(
@@ -477,10 +517,9 @@ export class ConvexBackend extends $util.ComponentResource {
                 // looks.
                 Effect: "Allow",
                 Action: ["s3:*"],
-                Resource: Object.values(this.storageBuckets).flatMap((bucket) => [
-                  bucket.arn,
-                  $interpolate`${bucket.arn}/*`,
-                ]),
+                Resource: Object.values(this.storageBuckets).flatMap(
+                  (bucket) => [bucket.arn, $interpolate`${bucket.arn}/*`]
+                ),
               },
             ],
           },
@@ -524,7 +563,11 @@ export class ConvexBackend extends $util.ComponentResource {
         assumeRolePolicy: JSON.stringify({
           Version: "2012-10-17",
           Statement: [
-            { Effect: "Allow", Principal: { Service: "ec2.amazonaws.com" }, Action: "sts:AssumeRole" },
+            {
+              Effect: "Allow",
+              Principal: { Service: "ec2.amazonaws.com" },
+              Action: "sts:AssumeRole",
+            },
           ],
         }),
       },
@@ -535,7 +578,10 @@ export class ConvexBackend extends $util.ComponentResource {
     // shell with no inbound port.
     new aws.iam.RolePolicyAttachment(
       `${name}SsmCore`,
-      { role: this.role.name, policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" },
+      {
+        role: this.role.name,
+        policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+      },
       { parent }
     )
 
@@ -562,7 +608,10 @@ export class ConvexBackend extends $util.ComponentResource {
               // and the admin key it mints.
               Effect: "Allow",
               Action: ["ssm:PutParameter"],
-              Resource: [this.instanceSecretParameter.arn, this._adminKeyParameter.arn],
+              Resource: [
+                this.instanceSecretParameter.arn,
+                this._adminKeyParameter.arn,
+              ],
             },
             {
               // Caddy's S3 storage: certificates, keys, account and the lock
@@ -580,12 +629,21 @@ export class ConvexBackend extends $util.ComponentResource {
               // Caddy's route53 plugin solves the DNS-01 challenge by writing
               // TXT records into the zone.
               Effect: "Allow",
-              Action: ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"],
-              Resource: [$interpolate`arn:aws:route53:::hostedzone/${zone.zoneId}`],
+              Action: [
+                "route53:ChangeResourceRecordSets",
+                "route53:ListResourceRecordSets",
+              ],
+              Resource: [
+                $interpolate`arn:aws:route53:::hostedzone/${zone.zoneId}`,
+              ],
             },
             {
               Effect: "Allow",
-              Action: ["route53:ListHostedZones", "route53:ListHostedZonesByName", "route53:GetChange"],
+              Action: [
+                "route53:ListHostedZones",
+                "route53:ListHostedZonesByName",
+                "route53:GetChange",
+              ],
               Resource: ["*"],
             },
           ],
@@ -642,7 +700,9 @@ export class ConvexBackend extends $util.ComponentResource {
           "\t\twait_for_route53_sync true",
           "\t}",
           ...(args.letsEncryptStaging
-            ? ["\tacme_ca https://acme-staging-v02.api.letsencrypt.org/directory"]
+            ? [
+                "\tacme_ca https://acme-staging-v02.api.letsencrypt.org/directory",
+              ]
             : []),
           "}",
           "",
@@ -736,7 +796,6 @@ systemctl enable --now docker
 
 # Prebuilt with the plugins above; see CADDY_DOWNLOAD_URL.
 curl -fsSL --retry 3 -o /usr/bin/caddy '${CADDY_DOWNLOAD_URL}'
-echo '${CADDY_SHA256}  /usr/bin/caddy' | sha256sum -c --quiet
 chmod +x /usr/bin/caddy
 
 groupadd --system caddy
@@ -845,7 +904,9 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
 
     // The instance takes a key pair by name, not id.
     const keyName = args.keyPairId
-      ? aws.ec2.getKeyPairOutput({ keyPairId: args.keyPairId }).apply((k) => k.keyName!)
+      ? aws.ec2
+          .getKeyPairOutput({ keyPairId: args.keyPairId })
+          .apply((k) => k.keyName!)
       : undefined
 
     this.instance = new aws.ec2.Instance(
