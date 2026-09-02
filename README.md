@@ -1,44 +1,97 @@
-# shadcn/ui monorepo template
+# mnlth
 
-This is a TanStack Start monorepo template with shadcn/ui.
+A full-stack TypeScript app on your own AWS account. TanStack Start on Lambda,
+a self-hosted Convex backend on EC2, one shared CloudFront in front, all
+described in SST and deployed by `git push`.
 
-## Adding components
+- **Push `main`, ship production.** Branches and pull requests get their own
+  full stage at `<name>.fullstackaws.dev`, removed when the PR closes.
+- **Convex without the cloud bill.** The open-source backend runs on a single
+  arm64 instance behind Caddy, with real-time queries, a dashboard, and TLS
+  from a wildcard certificate.
+- **Nothing to log in to.** CI assumes an IAM role through OIDC. Admin keys
+  are minted by the backend and kept in SSM. No secrets live in GitHub.
+- **Runs on a laptop with only Docker.** `bun local` brings up the same
+  compose stack the servers run.
 
-To add components to your app, run the following command at the root of your `web` app:
+## Stack
 
-```bash
-pnpm dlx shadcn@latest add button -c apps/web
+| Layer | What | Where it runs |
+| --- | --- | --- |
+| Web | [TanStack Start](https://tanstack.com/start) (React 19, TanStack Router), Vite 8, Tailwind 4, [shadcn/ui](https://ui.shadcn.com) on Base UI | Lambda with response streaming, behind one CloudFront distribution shared by every stage |
+| Backend | [Convex](https://convex.dev) self-hosted: functions in `packages/backend/convex`, SQLite or RDS, files on the volume or S3 | One `t4g.small` EC2 instance per stage, Docker Compose, Caddy for TLS |
+| Infrastructure | [SST v4](https://sst.dev) with a custom `ConvexBackend` component | `sst.config.ts`, `infra/` |
+| Delivery | GitHub Actions, OIDC to AWS, one reusable deploy workflow | `.github/workflows` |
+| Tooling | Bun, Turborepo, Biome, TypeScript 6 | |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    dev["git push"] --> gha["GitHub Actions<br/>OIDC → IAM role"]
+    gha --> sst["sst deploy --stage"]
+    sst --> cf
+    sst --> ec2
+
+    browser["Browser"] --> cf["CloudFront<br/>fullstackaws.dev · *.fullstackaws.dev"]
+    cf --> lambda["Lambda<br/>TanStack Start"]
+    browser -- "wss / https" --> caddy
+
+    subgraph stage["one per stage"]
+        lambda
+        subgraph ec2["EC2 t4g.small"]
+            caddy["Caddy<br/>api · site · dashboard"] --> backend["Convex backend"]
+            caddy --> dash["Convex dashboard"]
+        end
+    end
+
+    lambda -. "VITE_CONVEX_URL" .-> caddy
 ```
 
-This will place the ui components in the `packages/ui/src/components` directory.
+Production owns the shared pieces: the VPC, the certificate bucket Caddy keeps
+its wildcard certificate in, and the CloudFront router whose `*.fullstackaws.dev`
+alias is how every other stage gets a subdomain without a distribution of its
+own. It publishes their ids to SSM; every other stage reads them at deploy
+time. Production deploys first and is removed last.
 
-## Using components
+| | Production | Any other stage |
+| --- | --- | --- |
+| Web | `fullstackaws.dev` | `<stage>.fullstackaws.dev` |
+| Convex | `api.` · `site.` · `dashboard.fullstackaws.dev` | `<stage>-api.` · `<stage>-site.` · `<stage>-dashboard.fullstackaws.dev` |
 
-To use the components in your app, import them from the `ui` package.
+## Repository
 
-```tsx
-import { Button } from "@workspace/ui/components/button";
+```
+apps/web/                  TanStack Start app (Nitro aws-lambda preset in vite.config.ts)
+packages/backend/convex/   Convex schema and functions
+packages/ui/               shadcn/ui components, Tailwind config, global CSS
+infra/convex-backend.ts    the ConvexBackend component: instance, Caddy, DNS, SSM, S3, RDS
+infra/shared.ts            production publishes shared ids to SSM; other stages read them
+infra/settings.ts          loads and validates sst.settings.json
+docker/docker-compose.yml  the Convex stack, run by the instances and by `bun local`
+scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
+scripts/local.ts           the whole app on this machine, no AWS
+scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
+sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
 ```
 
-## Local development
+## Quick start
 
-Two loops. The first needs Docker and nothing else; the second needs AWS
-credentials and gives you a personal stage in the cloud.
-
-### Docker only
+### On your machine, Docker only
 
 ```bash
+bun install
 bun local            # backend + dashboard in Docker, functions pushed on save, Vite on :3000
 bun local --reset    # wipe the local database and files first
 bun local --down     # stop the containers
 ```
 
-`scripts/local.ts` brings up `docker/docker-compose.yml`, the same stack the
-EC2 instances run, with a generated `INSTANCE_SECRET` kept in `docker/.env`
-(gitignored, so the admin key stays valid across restarts). It mints an admin
-key, writes it to `packages/backend/.env.local` for the Convex CLI, then runs
-`convex dev` and Vite with `VITE_CONVEX_URL=http://127.0.0.1:3210`. The
-dashboard is at http://127.0.0.1:6791 and asks for that key on first open.
+`scripts/local.ts` starts `docker/docker-compose.yml` with a generated
+`INSTANCE_SECRET` kept in `docker/.env` (gitignored, so the admin key stays
+valid across restarts), mints an admin key into `packages/backend/.env.local`
+for the Convex CLI, then runs `convex dev` and Vite with
+`VITE_CONVEX_URL=http://127.0.0.1:3210`. The dashboard is at
+http://127.0.0.1:6791 and asks for that key on first open.
 
 ### A personal stage in AWS
 
@@ -46,16 +99,27 @@ dashboard is at http://127.0.0.1:6791 and asks for that key on first open.
 bun sst dev --stage <you>
 ```
 
-`sst dev` deploys the stage (its EC2 backend included, so the first run takes
-a few minutes) and then runs Vite on http://localhost:3000 with
-`VITE_CONVEX_URL` set to the stage's backend. Push function changes with
-`bun convex:deploy --stage <you>` (see below), or run
+Deploys the stage (its EC2 backend included, so the first run takes a few
+minutes), then runs Vite on http://localhost:3000 against that stage's
+backend. Push function changes with `bun convex:deploy --stage <you>`, or run
 `bun convex:deploy --stage <you> --dev` alongside to push on every save. Only
 point `sst dev` at your own stage, never at `staging` or `production`: it
 leaves dev-mode resources behind until the next `sst deploy`.
 
-Backend functions live in `packages/backend/convex` and reach the web app as
-generated types:
+### Adding UI components
+
+```bash
+bunx shadcn@latest add button -c apps/web
+```
+
+Components land in `packages/ui/src/components` and are imported from the
+workspace package:
+
+```tsx
+import { Button } from "@workspace/ui/components/button"
+```
+
+Backend functions reach the web app as generated types:
 
 ```tsx
 import { api } from "@workspace/backend/convex/_generated/api"
@@ -64,22 +128,18 @@ import { useQuery } from "convex/react"
 const messages = useQuery(api.chat.getMessages)
 ```
 
-The client reads `VITE_CONVEX_URL`, which `sst.config.ts` sets to the stage's
-backend and `bun local` sets to the container. Running `bun dev` (plain Vite)
-skips that injection, so export it yourself.
-
 ## Deploying
 
 Git drives every deployment. GitHub Actions assumes the `github-actions-sst`
-IAM role through OIDC (no stored keys), runs biome and typecheck, then
-`sst deploy` and the Convex functions push.
+IAM role through OIDC, runs Biome and typecheck, then `sst deploy` and the
+Convex functions push.
 
-| Git event | Stage | Web | Convex | Lifetime |
-| --- | --- | --- | --- | --- |
-| push to `main` | `production` | `fullstackaws.dev` | `api.fullstackaws.dev` | permanent, protected |
-| push to a branch listed under `stages` | that stage | `<stage>.fullstackaws.dev` | `<stage>-api.fullstackaws.dev` | until removed |
-| pull request #N | `pr-N` | `pr-N.fullstackaws.dev` | `pr-N-api.fullstackaws.dev` | removed when the PR closes |
-| any other branch | none | lint and typecheck only | | |
+| Git event | Stage | Lifetime |
+| --- | --- | --- |
+| push to `main` | `production` | permanent, protected |
+| push to a branch listed under `stages` | that stage | until removed |
+| pull request #N | `pr-N` | removed when the PR closes |
+| any other branch | none, lint and typecheck only | |
 
 Which branches deploy is the `stages` map in `sst.settings.json`. Adding a
 developer or an environment is one line there:
@@ -88,16 +148,14 @@ developer or an environment is one line there:
 "stages": { "main": "production", "staging": "staging", "christianstamati": "christianstamati" }
 ```
 
-Pull requests from forks and draft pull requests are not deployed. A PR gets a
-comment with its URLs after each deploy. The first deploy of a new stage takes
-ten to twenty-five minutes (the box boots, pulls images, mints its admin key);
-later pushes take a few.
+Pull requests from forks and draft pull requests are not deployed. A PR gets
+a comment with its URLs after each deploy. The first deploy of a new stage
+takes ten to twenty-five minutes (the box boots, pulls images, gets its
+certificate, mints its admin key); later pushes take a few.
 
-The workflows, all in `.github/workflows`:
-
-| File | Runs on | Does |
+| Workflow | Runs on | Does |
 | --- | --- | --- |
-| `ci.yml` | every push and PR | biome, typecheck |
+| `ci.yml` | every push and PR | Biome, typecheck |
 | `deploy.yml` | called by the others | the one deploy job |
 | `deploy-branch.yml` | push | maps the branch through `stages`, deploys |
 | `deploy-pr.yml` | PR opened, pushed, reopened, ready for review | deploys `pr-N`, comments |
@@ -109,44 +167,34 @@ The workflows, all in `.github/workflows`:
 
 ### From a laptop
 
-Every stage can also be deployed by hand with the same commands CI runs:
+The same commands CI runs:
 
 ```bash
-bun sst deploy --stage production   # first run takes ~10 min
+bun sst deploy --stage production
 bun convex:deploy --stage production --wait
-bun sst remove --stage <stage>      # tear down; production refuses
+bun sst remove --stage <stage>      # production refuses
 ```
 
-### What ships
+### CI credentials
 
-Two things per stage, both under the domain in `sst.settings.json`:
-
-| | Hostname | What runs |
-| --- | --- | --- |
-| `apps/web` | apex for production, `<stage>.` otherwise | TanStack Start on a streaming Lambda behind one shared CloudFront distribution |
-| Convex | `api.` · `site.` · `dashboard.`, prefixed `<stage>-` off production | one EC2 instance behind Caddy; storage and database per `sst.settings.json` |
-
-The frontend needs Nitro's `aws-lambda` preset, set in `apps/web/vite.config.ts`.
-
-Production owns the shared VPC, the certificate bucket and the CloudFront
-distribution (an `sst.aws.Router` with a `*.<domain>` alias, which is how every
-other stage gets its own subdomain without a distribution of its own). It
-publishes their ids to SSM, so it deploys first and is removed last. No preview
-or branch stage can build until production exists.
+The role's trust policy accepts tokens whose subject names this repository.
+GitHub includes the owner's and repository's numeric ids in that subject, so
+the policy matches both `repo:christianstamati/mnlth:*` and
+`repo:christianstamati@<owner id>/mnlth@<repo id>:*`. Its ARN is the
+repository variable `AWS_ROLE_ARN`. Nothing else is stored in GitHub.
 
 ### SST Console
 
 The [SST Console](https://console.sst.dev) reads state straight from the
 `sst-state-*` bucket, so it lists every stage whoever deployed it, with its
 outputs, the web Lambda's logs and its uncaught errors. Connect the AWS
-account there once (it installs a CloudFormation stack with a read role) and
-pick `eu-central-1`. Autodeploy stays off; GitHub Actions is the deploy engine.
+account there once and pick `eu-central-1`. Leave Autodeploy off: GitHub
+Actions is the deploy engine, and both would race for the state lock.
 
 ### Deployment settings
 
-`sst.settings.json` holds what varies per deployment but not per stage: the base
-domain, the region, per-stage choices, and which branches deploy. Only `domain`
-and `region` are required; the rest default to what is shown here.
+`sst.settings.json` holds what varies per deployment but not per stage. Only
+`domain` and `region` are required; the rest default to what is shown here.
 
 ```json
 {
@@ -160,165 +208,164 @@ and `region` are required; the rest default to what is shown here.
 }
 ```
 
-Stage names must be lowercase letters, digits and hyphens, at most 24
-characters: they become hostname labels and resource prefixes, and
+`protect` lists stages whose resources refuse deletion. `removal` is what
+`sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
+and any RDS instance) or `retain-all`. `storage` (`volume` | `s3`) and
+`database` (`sqlite` | `postgres` | `mysql`) pick the Convex backend's file
+storage and database engine. Each is one value or a map keyed by stage with
+`*` as the fallback. Stage names must be lowercase letters, digits and
+hyphens, at most 24 characters: they become hostname labels, and
 `sst.config.ts` refuses anything else before touching AWS.
 
-`protect` lists stages whose resources refuse deletion; a deploy that must
-replace a resource on a protected stage fails, so leave it empty while a
-stage's instance name or database is still changing. `removal` is what
-`sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
-and any RDS instance) or `retain-all`, given as one policy or as a map keyed
-by stage with `*` as the fallback. `storage` (`volume` | `s3`) and `database`
-(`sqlite` | `postgres` | `mysql`) pick the Convex backend's file storage and
-database engine the same way. `infra/settings.ts` validates the file at load
-time.
+## The Convex backend
 
-### Convex functions
+### What the instance runs
+
+Amazon Linux 2023 on arm64. At first boot, userData installs Docker and the
+compose plugin, downloads a Caddy build with the Route 53 and S3 plugins,
+writes `docker/docker-compose.yml` and a `.env` assembled from SSM, and starts
+both. Caddy terminates TLS for the three hostnames with one wildcard
+certificate for `*.fullstackaws.dev` (DNS-01 through Route 53), stored in the
+shared certificate bucket so it is issued once for every stage and every
+replacement instance. The compose ports are bound to loopback; the security
+group opens 80 and 443 to the internet and 22 to EC2 Instance Connect's range
+only.
+
+| Public host | Local target | What |
+| --- | --- | --- |
+| `<prefix>api.` | `127.0.0.1:3210` | API and WebSocket |
+| `<prefix>site.` | `127.0.0.1:3211` | HTTP actions (404 until functions are deployed) |
+| `<prefix>dashboard.` | `127.0.0.1:6791` | Dashboard |
+
+### Functions
 
 The backend comes up empty; the functions in `packages/backend/convex` have
-to be pushed into it. The Convex CLI needs two variables for a self-hosted
-deployment, `CONVEX_SELF_HOSTED_URL` and `CONVEX_SELF_HOSTED_ADMIN_KEY`, and
-the key can only come from the running backend: the instance mints it and
-publishes it to SSM a few minutes into its first boot.
+to be pushed into it. The Convex CLI needs `CONVEX_SELF_HOSTED_URL` and
+`CONVEX_SELF_HOSTED_ADMIN_KEY`, and the key can only come from the running
+backend: the instance mints it and publishes it to SSM a few minutes into its
+first boot.
 
 `scripts/convex-deploy.ts` reads the URL from `/mnlth/<stage>/convex/url` and
-the key from `/mnlth/<stage>/convex/admin-key` and runs `convex deploy`. Run
-it after `sst deploy`, and again whenever `packages/backend/convex` changes:
+the key from `/mnlth/<stage>/convex/admin-key`, waits for the backend to
+answer over HTTPS (the key lands before Caddy has its certificate), and runs
+`convex deploy`:
 
 ```bash
-bun convex:deploy --stage production          # fails fast if the key is not published yet
-bun convex:deploy --stage production --wait   # polls for it, up to 15 minutes
+bun convex:deploy --stage production          # fails fast if the stage is not ready
+bun convex:deploy --stage production --wait   # polls, up to 15 minutes
 ```
 
-The stage's `INSTANCE_SECRET` is generated once by `sst.config.ts` and kept in
-SSM, so a key stays valid across instance replacements — without it the backend
-invents an identity per data volume and every replacement silently invalidates
-every key. It also means a key can be cut without the deployment running:
+The stage's `INSTANCE_SECRET` is generated once and kept in SSM, so a key
+stays valid across instance replacements. Keys are bound to the stage name as
+well as the secret, so a `staging` key does not open `production`. A key can
+be cut without the deployment running:
 
 ```bash
 docker run --rm --entrypoint ./generate_key \
-  ghcr.io/get-convex/convex-backend:<tag> <stage> "$(aws ssm get-parameter \
+  ghcr.io/get-convex/convex-backend:latest <stage> "$(aws ssm get-parameter \
     --name /mnlth/<stage>/convex/instance-secret --with-decryption \
     --query Parameter.Value --output text)"
 ```
 
-Keys are bound to the stage name as well as the secret, so a `dev` key does not
-open `production`. Rotation is all-or-nothing: there is no per-key revocation.
+That key is a root credential: full read and write on every table, plus
+function push. It lives in SSM and in the one process that uses it. It is
+never an environment variable on the frontend, and above all never a `VITE_`
+one: those are inlined into the client bundle and served to every visitor.
 
-That key is a root credential — full read and write on every table, plus
-function push. It lives in SSM and in the one process that uses it. It is never
-an environment variable on the frontend, and above all never a `VITE_` one:
-those are inlined into the client bundle and served to every visitor.
+### Storage and database
 
-### Convex storage
-
-The backend keeps snapshots, function modules, user files and search indexes in
-five per-stage S3 buckets rather than on the instance's volume, so replacing the
+With `storage: "s3"` the backend keeps snapshots, function modules, user
+files and search indexes in five per-stage S3 buckets, so replacing the
 instance costs none of it. The bucket names and an access key scoped to those
-five buckets reach the box through SSM, which userData reads at boot —
-nothing sensitive lands in userData itself,
-which is readable by anyone holding `ec2:DescribeInstanceAttribute`.
+buckets reach the box through SSM. With `volume` (the default) everything
+lives on the root disk and a replaced instance starts empty.
 
-The S3 variables are optional in the stack repo: unset, the backend keeps
-everything on its volume, which is what a bare `docker compose up` gets.
-
-Moving a deployment that already holds data between local and S3 storage is an
-export and import, not a restart: the rows keep pointing at storage the new
-backend cannot read.
+With `database: "postgres"` or `"mysql"` an RDS instance in a private subnet
+holds the tables; the connection string is the SSM parameter
+`/mnlth/<stage>/convex/database-env`. Moving a deployment that already holds
+data between storage or database modes is an export and import, not a
+restart:
 
 ```bash
-npx convex export --path snapshot.zip
-npx convex import --replace-all snapshot.zip
+bunx convex export --path snapshot.zip
+bunx convex import --replace-all snapshot.zip
 ```
 
-Link AWS resources to the frontend with `link: [...]` — linked resources are
-read in the app via `import { Resource } from "sst"`.
+## Operating a stage
 
 ### Shell access
 
-Two ways onto the box, neither with a port open to the internet at large:
+Neither opens a port to the internet at large:
 
 ```bash
-aws ssm start-session --target <instanceId>                       # Session Manager
-aws ec2-instance-connect ssh --instance-id <instanceId> --os-user ec2-user
+aws ssm start-session --target <instanceId>                                  # Session Manager
+aws ec2-instance-connect ssh --instance-id <instanceId> --os-user ec2-user   # SSH via Instance Connect
 ```
 
-The second uses EC2 Instance Connect, which pushes a one-off key through the
-AWS API and connects from AWS's own address range; without a key pair the
-security group admits port 22 from that range only. Setting `keyPairId` in
-`sst.config.ts` installs the key pair for `ec2-user` at launch and opens port
-22 to everyone, so plain `ssh -i <key.pem> ec2-user@<publicIp>` works too.
+The instance id is in the deploy outputs and in the SST Console. Setting
+`keyPairId` in `sst.config.ts` to an existing key pair installs it for
+`ec2-user` and opens port 22 to everyone, so plain `ssh -i` works too.
 
-### Convex database
+### Reaching the database
 
-The RDS instance sits in a private subnet with no route from the internet, in
-the same availability zone as the backend. To reach it from a desktop client
-such as DBeaver, forward a port through the EC2 box with Session Manager. The
-instance role already carries `AmazonSSMManagedInstanceCore`, so this needs no
-open port, key pair or bastion, and the service itself costs nothing.
-
-One-time, on your own machine, install the plugin the AWS CLI shells out to.
-The instance side needs nothing: Amazon Linux 2023 ships the SSM Agent running.
-
-```bash
-brew install --cask session-manager-plugin
-```
-
-The backend's connection string is kept in SSM. The first line is
-`MYSQL_URL=mysql://<user>:<password>@<host>:3306` (or `POSTGRES_URL=` on
-port 5432 when the stage runs Postgres):
-
-```bash
-aws ssm get-parameter --name /mnlth/<stage>/convex/database-env \
-  --with-decryption --query Parameter.Value --output text
-```
-
-Open the tunnel with the instance id from the deploy outputs and the host from
-that URL. Leave it running while you work:
+RDS has no route from the internet. Forward a port through the instance with
+Session Manager (`brew install --cask session-manager-plugin` once), using
+the host from the `database-env` parameter:
 
 ```bash
 aws ssm start-session --target <instanceId> \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["<host>"],"portNumber":["3306"],"localPortNumber":["3306"]}'
+  --parameters '{"host":["<rds host>"],"portNumber":["3306"],"localPortNumber":["3306"]}'
 ```
 
-Then point the client at `localhost:3306` with the user and password from the
-URL. The database is named after the stage, the same as the Convex instance.
+Rows are Convex's internal storage format, not the app's documents one to
+one. Treat the connection as read-only for debugging; edit data through
+functions or the dashboard.
 
-Current production values (throwaway stage; remove before this repo is shared):
+### Triage on the box
 
 ```bash
-aws ssm start-session --target i-023ca372369f5bead \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["mnlth-production-convexdatabaseinstance-ozxbsfzt.cnu4qcq02b6y.eu-central-1.rds.amazonaws.com"],"portNumber":["3306"],"localPortNumber":["3306"]}'
+sudo tail -100 /var/log/cloud-init-output.log   # a fresh instance that came up wrong; the last lines are the failure
+cd /opt/convex && docker compose ps             # what is running, and healthy
+docker compose logs --tail=100 backend
+journalctl -u caddy -n 50 | grep -iE "certificate|error|obtain"
+free -h; df -h /; sudo dmesg -T | grep -iE "oom|killed process"
 ```
 
-| Field | Value |
-| --- | --- |
-| Host | localhost |
-| Port | 3306 |
-| Database | production |
-| Username | root |
-| Password | jbdNdq2ouWE2WDINYNIBwByiUn6LNIul |
-
-The credentials are the backend's own, with full access to every table. Rows
-are Convex's internal storage format, not the app's documents one to one, so
-treat the connection as read-only for debugging; edit data through Convex
-functions or the dashboard.
+Normal on a `t4g.small`: 500 to 600 MiB of memory idle, 5 to 7 GiB of the
+20 GiB root disk, load under 0.5. EC2 publishes no memory or disk metrics, so
+those come from the box. `t4g` is burstable: a `CPUCreditBalance` trending
+toward zero means the instance is undersized, not momentarily busy. A
+container that vanished without an error in its own logs was probably killed
+by the OOM killer. `unknown` from `/version` is normal for self-hosted images.
 
 ## Removing a stage
 
-`production` is protected; every other stage removes cleanly, and pull request
-stages remove themselves. What survives a removal, what a half-done
-teardown leaves behind, and the order that actually works are all in
-[docs/deployment-removal.md](docs/deployment-removal.md).
+`production` is protected: `sst remove` refuses it until `protect` is edited
+in `sst.settings.json`. Every other stage removes cleanly, and pull request
+stages remove themselves.
+
+What `removal: "retain"` keeps is SST's fixed list, not everything: the VPC,
+subnets, default security group, and any RDS instance, subnet group and
+parameter group. Internet gateway and route tables go, so a retained
+production removal leaves a VPC with no routing plus a billing database. Two
+things to know before tearing production down:
+
+- `protect` is read from config at run time; `removal` and RDS deletion
+  protection are read from state and from the live instance, so an edit to
+  those does nothing until a deploy carries it.
+- SST has reported "Deleted" for VPCs and subnets it retained. Check the
+  account afterwards, and if the RDS instance was retained but its subnet
+  group was not, delete the instance by hand and re-run the remove.
+
+The shared VPC, certificate bucket and router belong to production. A
+non-production stage references them and cannot delete them, whatever its
+removal policy says.
 
 ## Resetting the AWS account
 
-When `sst remove` has left carcasses behind (it reports "Deleted" for VPCs
-and subnets it retained) or orphans no stage tracks, empty the whole region
-with the AWS CLI instead of SST state:
+When `sst remove` has left carcasses behind or orphans no stage tracks, empty
+the whole region with the AWS CLI instead of SST state:
 
 ```bash
 bun reset:aws --dry-run   # inventory of what would go; region from sst.settings.json
@@ -330,4 +377,8 @@ It keeps the `sst-state-*` / `sst-asset-*` buckets and `/sst/*` parameters
 passphrase) and the region's default VPC (`--include-default-vpc`). IAM,
 Route 53 and CloudFront are global, so it only reports them at the end.
 Run it with nothing you want to keep in the region: it deletes everything,
-not just this app.
+not just this app. EC2 key pairs go too, so a `keyPairId` in `sst.config.ts`
+must be recreated afterwards.
+
+What survives every teardown, on purpose: the Route 53 zone, the SST state
+and asset buckets, the `github-actions-sst` role, and the `/sst/*` parameters.

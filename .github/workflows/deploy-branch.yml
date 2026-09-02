@@ -6,6 +6,10 @@ name: deploy branch
 on:
   push:
     branches: ["**"]
+    # Docs-only changes deploy nothing.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
 
 jobs:
   resolve:

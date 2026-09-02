@@ -7,6 +7,10 @@ name: deploy pr
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # Docs-only changes deploy nothing.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
 
 jobs:
   deploy:
