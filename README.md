@@ -156,6 +156,78 @@ npx convex import --replace-all snapshot.zip
 Link AWS resources to the frontend with `link: [...]` — linked resources are
 read in the app via `import { Resource } from "sst"`.
 
+### Shell access
+
+Two ways onto the box, neither with a port open to the internet at large:
+
+```bash
+aws ssm start-session --target <instanceId>                       # Session Manager
+aws ec2-instance-connect ssh --instance-id <instanceId> --os-user ec2-user
+```
+
+The second uses EC2 Instance Connect, which pushes a one-off key through the
+AWS API and connects from AWS's own address range; without a key pair the
+security group admits port 22 from that range only. Setting `keyPairId` in
+`sst.config.ts` installs the key pair for `ec2-user` at launch and opens port
+22 to everyone, so plain `ssh -i <key.pem> ec2-user@<publicIp>` works too.
+
+### Convex database
+
+The RDS instance sits in a private subnet with no route from the internet, in
+the same availability zone as the backend. To reach it from a desktop client
+such as DBeaver, forward a port through the EC2 box with Session Manager. The
+instance role already carries `AmazonSSMManagedInstanceCore`, so this needs no
+open port, key pair or bastion, and the service itself costs nothing.
+
+One-time, on your own machine, install the plugin the AWS CLI shells out to.
+The instance side needs nothing: Amazon Linux 2023 ships the SSM Agent running.
+
+```bash
+brew install --cask session-manager-plugin
+```
+
+The backend's connection string is kept in SSM. The first line is
+`MYSQL_URL=mysql://<user>:<password>@<host>:3306` (or `POSTGRES_URL=` on
+port 5432 when the stage runs Postgres):
+
+```bash
+aws ssm get-parameter --name /mnlth/<stage>/convex/database-env \
+  --with-decryption --query Parameter.Value --output text
+```
+
+Open the tunnel with the instance id from the deploy outputs and the host from
+that URL. Leave it running while you work:
+
+```bash
+aws ssm start-session --target <instanceId> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<host>"],"portNumber":["3306"],"localPortNumber":["3306"]}'
+```
+
+Then point the client at `localhost:3306` with the user and password from the
+URL. The database is named after the stage, the same as the Convex instance.
+
+Current production values (throwaway stage; remove before this repo is shared):
+
+```bash
+aws ssm start-session --target i-023ca372369f5bead \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["mnlth-production-convexdatabaseinstance-ozxbsfzt.cnu4qcq02b6y.eu-central-1.rds.amazonaws.com"],"portNumber":["3306"],"localPortNumber":["3306"]}'
+```
+
+| Field | Value |
+| --- | --- |
+| Host | localhost |
+| Port | 3306 |
+| Database | production |
+| Username | root |
+| Password | jbdNdq2ouWE2WDINYNIBwByiUn6LNIul |
+
+The credentials are the backend's own, with full access to every table. Rows
+are Convex's internal storage format, not the app's documents one to one, so
+treat the connection as read-only for debugging; edit data through Convex
+functions or the dashboard.
+
 ## Removing a stage
 
 `production` is protected and retains its VPC, subnets and RDS instance;

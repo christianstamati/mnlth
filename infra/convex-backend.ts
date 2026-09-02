@@ -150,6 +150,13 @@ export interface ConvexBackendArgs {
    */
   volumeSize?: $util.Input<number>
   /**
+   * The id of an EC2 key pair (`key-...`) to install on the instance for
+   * `ec2-user`. Assigned at launch: changing it replaces the instance. With a
+   * key pair, port 22 is open to everyone; without one, only to EC2 Instance
+   * Connect's addresses.
+   */
+  keyPairId?: $util.Input<string>
+  /**
    * Issue certificates from Let's Encrypt's staging CA. Browsers reject those,
    * but the production CA allows only 5 duplicate certificates per hostname
    * per week. With the shared certificate bucket this matters only when the
@@ -197,10 +204,11 @@ export class ConvexBackend extends $util.ComponentResource {
     const prefix = $util.output(args.prefix ?? "")
     const region = aws.getRegionOutput().region
 
-    // What the backend identifies itself as. Admin keys are minted from and
-    // checked against this and the instance secret, and a managed database
-    // is named after it with `-` swapped for `_`.
-    this._instanceName = `${$app.name}-${$app.stage}`
+    // What the backend identifies itself as: the stage, so admin keys read
+    // `<stage>|...`. Keys are minted from and checked against this and the
+    // instance secret, and a managed database is named after it with `-`
+    // swapped for `_`.
+    this._instanceName = $app.stage
     const databaseName = this._instanceName.replace(/-/g, "_")
 
     this._hosts = {
@@ -214,8 +222,18 @@ export class ConvexBackend extends $util.ComponentResource {
     // ---- network ----------------------------------------------------------
 
     // 3210/3211/6791 stay closed. Caddy proxies them from loopback; opening
-    // them means an unencrypted backend and a public admin dashboard. No port
-    // 22 either: shells go through SSM Session Manager.
+    // them means an unencrypted backend and a public admin dashboard. Port 22
+    // admits everyone when a key pair is installed (the key is the lock),
+    // otherwise only EC2 Instance Connect's own addresses, which AWS
+    // publishes as a managed prefix list per region. Shells otherwise go
+    // through SSM Session Manager.
+    const instanceConnect = aws.ec2.getManagedPrefixListOutput({
+      name: $interpolate`com.amazonaws.${region}.ec2-instance-connect`,
+    })
+    const ssh = args.keyPairId
+      ? { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"], description: "SSH: key pair" }
+      : { protocol: "tcp", fromPort: 22, toPort: 22, prefixListIds: [instanceConnect.id], description: "SSH: EC2 Instance Connect" }
+
     this.securityGroup = new aws.ec2.SecurityGroup(
       `${name}SecurityGroup`,
       {
@@ -224,6 +242,7 @@ export class ConvexBackend extends $util.ComponentResource {
         ingress: [
           { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"], description: "HTTP: redirect to HTTPS" },
           { protocol: "tcp", fromPort: 443, toPort: 443, cidrBlocks: ["0.0.0.0/0"], description: "HTTPS" },
+          ssh,
         ],
         egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
         ...args.transform?.securityGroup,
@@ -272,6 +291,13 @@ export class ConvexBackend extends $util.ComponentResource {
     // compose .env at boot.
     const envParameters: aws.ssm.Parameter[] = []
 
+    // The box lands in the first public subnet. A managed database is pinned
+    // to the same availability zone: neither is replicated across zones, so
+    // spreading them adds latency and cross-zone transfer fees for nothing.
+    const instanceSubnetId = args.vpc.publicSubnets.apply((subnets) => subnets[0])
+    const availabilityZone = aws.ec2.getSubnetOutput({ id: instanceSubnetId })
+      .availabilityZone
+
     const database =
       typeof args.database === "string"
         ? { engine: args.database }
@@ -279,6 +305,20 @@ export class ConvexBackend extends $util.ComponentResource {
 
     if (database.engine !== "sqlite") {
       const { engine, ...databaseArgs } = database
+      // Both SST components take the same transform shape for the instance.
+      type InstanceTransform = NonNullable<sst.aws.MysqlArgs["transform"]>
+      const transform = (databaseArgs as { transform?: InstanceTransform }).transform
+      const databaseTransform: InstanceTransform = {
+        ...transform,
+        instance: (instanceArgs, opts, resourceName) => {
+          instanceArgs.availabilityZone = availabilityZone
+          if (typeof transform?.instance === "function") {
+            transform.instance(instanceArgs, opts, resourceName)
+          } else if (transform?.instance) {
+            Object.assign(instanceArgs, transform.instance)
+          }
+        },
+      }
 
       // RDS creates the database at launch, so the box needs no SQL client.
       // The backend connects to the database named after INSTANCE_NAME.
@@ -286,12 +326,24 @@ export class ConvexBackend extends $util.ComponentResource {
         engine === "postgres"
           ? new sst.aws.Postgres(
               `${name}Database`,
-              { ...databaseArgs, vpc: args.vpc, database: databaseName },
+              {
+                ...databaseArgs,
+                vpc: args.vpc,
+                database: databaseName,
+                transform: databaseTransform,
+              },
               { parent }
             )
           : new sst.aws.Mysql(
               `${name}Database`,
-              { ...databaseArgs, vpc: args.vpc, database: databaseName },
+              {
+                // SST's default (8.0.40) is no longer offered by RDS.
+                version: "8.4.11",
+                ...databaseArgs,
+                vpc: args.vpc,
+                database: databaseName,
+                transform: databaseTransform,
+              },
               { parent }
             )
 
@@ -716,12 +768,18 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
       ],
     })
 
+    // The instance takes a key pair by name, not id.
+    const keyName = args.keyPairId
+      ? aws.ec2.getKeyPairOutput({ keyPairId: args.keyPairId }).apply((k) => k.keyName!)
+      : undefined
+
     this.instance = new aws.ec2.Instance(
       `${name}Instance`,
       {
         ami: ami.id,
         instanceType: args.instanceType ?? "t4g.small",
-        subnetId: args.vpc.publicSubnets.apply((subnets) => subnets[0]),
+        subnetId: instanceSubnetId,
+        keyName,
         vpcSecurityGroupIds: [this.securityGroup.id],
         iamInstanceProfile: instanceProfile.name,
         // The route out during boot. With an Elastic IP it is replaced once

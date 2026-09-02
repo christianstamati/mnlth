@@ -72,6 +72,11 @@ export default $config({
       prefix: isProd ? "" : `${$app.stage}-`,
       // A stable address for production. Other stages follow the instance.
       elasticIp: isProd,
+      // Installed for ec2-user at launch and opens port 22 to everyone.
+      // Without it, SSH is admitted from EC2 Instance Connect only.
+      keyPairId: "key-07ece9db1f187d7dd",
+      storage: "s3",
+      database: "mysql",
       // Defaults: SQLite and files on the root volume. Options are
       // storage: "s3" and database: "postgres" | "mysql" | { engine, ... }.
     })
