@@ -1,0 +1,41 @@
+# MySQL for the self-hosted Convex backend.
+#
+# Standalone:
+#   docker compose -f mysql.docker-compose.yml up -d
+#
+# Alongside Convex (shares the default network, so the backend reaches it as "mysql"):
+#   docker compose -f docker-compose.yml -f mysql.docker-compose.yml up -d
+#
+# Then set in .env (no database name in the URL; the backend creates one named
+# after INSTANCE_NAME):
+#   MYSQL_URL=mysql://convex:password@mysql:3306
+#   DO_NOT_REQUIRE_SSL=1
+#
+# 8.4 is the current LTS line. The "latest" tag tracks the 9.x innovation
+# releases, which change more often, so it is pinned here on purpose.
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_USER=convex
+      - MYSQL_PASSWORD=password
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mysql-data:

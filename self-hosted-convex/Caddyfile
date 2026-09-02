@@ -1,0 +1,36 @@
+# Caddy with the Route53 DNS plugin. Build/download it with:
+#   caddy: https://caddyserver.com/api/download?os=linux&arch=arm64&p=github.com/caddy-dns/route53
+#   or:    xcaddy build --with github.com/caddy-dns/route53
+#
+# Run with DOMAIN set, e.g.:  DOMAIN=fullstackaws.dev caddy run --config Caddyfile
+# AWS credentials come from the default SDK chain: the EC2 instance profile on
+# the server, AWS_PROFILE / ~/.aws on a laptop. Needs route53:ListHostedZones*,
+# route53:ChangeResourceRecordSets and route53:GetChange on the hosted zone.
+
+{
+	email admin@{$DOMAIN}
+	acme_dns route53
+	# Uncomment while testing to stay clear of Let's Encrypt rate limits.
+	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+(proxy) {
+	encode zstd gzip
+	reverse_proxy {args[0]}
+}
+
+# Convex HTTP actions
+site.{$DOMAIN} {
+	import proxy 127.0.0.1:3211
+}
+
+# Convex API (HTTP + WebSocket sync)
+api.{$DOMAIN} {
+	import proxy 127.0.0.1:3210
+}
+
+# Convex dashboard. Login already requires the admin key; add basic_auth or an
+# IP allowlist here if you want a second layer.
+dashboard.{$DOMAIN} {
+	import proxy 127.0.0.1:6791
+}
