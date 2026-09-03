@@ -7,8 +7,5 @@
     "skipLibCheck": true,
     "strict": true
   },
-  "include": [
-    "sst.config.ts",
-    "infra/**/*.ts"
-  ]
+  "include": ["sst.config.ts", "infra/**/*.ts"]
 }

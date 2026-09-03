@@ -31,7 +31,13 @@ export function createAlerts(name: string): Alerts {
   return { topic, global: { topic: globalTopic, provider } }
 }
 
-type AlarmArgs = Omit<aws.cloudwatch.MetricAlarmArgs, "okActions" | "name">
+type AlarmArgs = Omit<
+  aws.cloudwatch.MetricAlarmArgs,
+  "alarmActions" | "okActions" | "name"
+> & {
+  /** Extra actions besides the topic, e.g. EC2 recovery. */
+  alarmActions?: $util.Input<string>[]
+}
 
 /**
  * A metric alarm that notifies the topic when it fires and again when it
