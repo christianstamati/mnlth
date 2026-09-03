@@ -389,9 +389,10 @@ It asks for the bump (patch, minor, major) and one sentence for the release
 notes. CI refuses a PR without one unless it has the `no changeset` label,
 which Renovate adds to its own. On every push to `main`, `release.yml`
 updates a "chore: release" pull request that bumps `apps/web/package.json`
-and writes `CHANGELOG.md`. Merging it tags `web@<version>`, publishes the
-GitHub Release and posts it to Slack. Nothing goes to npm: the three
-workspace packages are a `fixed` group and version together.
+and writes `apps/web/CHANGELOG.md`. Merging it tags `web@<version>`, publishes the
+GitHub Release and posts it to Slack. Nothing goes to npm, and only
+`web` is versioned: `@workspace/backend` and `@workspace/ui` are internal
+and listed under `ignore`, so there is one version and one changelog.
 
 ### Dependencies
 

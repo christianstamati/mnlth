@@ -2,13 +2,17 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": [
     "@changesets/changelog-github",
-    { "repo": "christianstamati/mnlth" }
+    {
+      "repo": "christianstamati/mnlth"
+    }
   ],
   "commit": false,
   "baseBranch": "main",
-  "privatePackages": { "version": true, "tag": true },
-  "fixed": [["web", "@workspace/backend", "@workspace/ui"]],
+  "privatePackages": {
+    "version": true,
+    "tag": true
+  },
   "updateInternalDependencies": "patch",
   "access": "restricted",
-  "ignore": []
+  "ignore": ["@workspace/backend", "@workspace/ui"]
 }

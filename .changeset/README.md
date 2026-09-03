@@ -7,9 +7,9 @@ bun changeset
 ```
 
 Pick the bump (patch for a fix, minor for a feature, major for a break) and
-write one sentence for the people who read release notes. The packages are a
-`fixed` group, so any bump moves `web`, `@workspace/backend` and
-`@workspace/ui` together; the version lives in `apps/web/package.json`.
+write one sentence for the people who read release notes. Only `web` is
+versioned; the two internal packages are ignored. The version lives in
+`apps/web/package.json` and the changelog next to it.
 
 CI refuses a pull request without a changeset unless it carries the
 `no changeset` label. Renovate adds that label itself.
