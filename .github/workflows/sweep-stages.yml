@@ -1,0 +1,53 @@
+# Preview stages are removed when their pull request closes, but a removal
+# that failed, or a stage deployed from the Actions tab and forgotten, keeps
+# costing an EC2 instance. Once a week, list every `pr-*` stage that still
+# has state and remove the ones whose pull request is closed.
+name: sweep stages
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: remove stale pr stages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SST_PRINT_LOGS: "1"
+        run: |
+          set -euo pipefail
+          bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r .state)
+          stages=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix app/mnlth/pr- --query 'Contents[].Key' --output text 2>/dev/null \
+            | tr '\t' '\n' | sed -nE 's#^app/mnlth/(pr-[0-9]+)\.json$#\1#p' || true)
+          [ -z "$stages" ] && { echo "no pr stages with state"; exit 0; }
+          for stage in $stages; do
+            number=${stage#pr-}
+            state=$(gh pr view "$number" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+            if [ "$state" = "OPEN" ]; then
+              echo "$stage: PR open, keeping"
+              continue
+            fi
+            echo "$stage: PR $state, removing"
+            bun sst remove --stage "$stage" || { echo "$stage: remove failed"; continue; }
+            aws s3 rm "s3://$bucket/app/mnlth/$stage.json" || true
+            aws ssm delete-parameter --name "/sst/passphrase/mnlth/$stage" || true
+          done

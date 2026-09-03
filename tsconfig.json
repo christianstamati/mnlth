@@ -6,5 +6,6 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true
-  }
+  },
+  "include": ["sst.config.ts", "infra/**/*.ts"]
 }

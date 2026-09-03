@@ -26,3 +26,7 @@ certs/*.pem
 
 # ...but the example env file is meant to be read
 !.env.example
+
+# playwright
+playwright-report
+test-results

@@ -41,3 +41,28 @@ jobs:
     with:
       stage: ${{ needs.resolve.outputs.stage }}
       environment: ${{ needs.resolve.outputs.stage == 'production' && 'production' || 'preview' }}
+
+  # Only the specs tagged @smoke: they never write, so they are safe against
+  # production and any developer's stage.
+  smoke:
+    needs: [resolve, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run e2e -- --grep @smoke
+        working-directory: apps/web
+        env:
+          CI: "true"
+          E2E_BASE_URL: ${{ needs.deploy.outputs.web_url }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-${{ needs.resolve.outputs.stage }}
+          path: apps/web/playwright-report
+          retention-days: 7

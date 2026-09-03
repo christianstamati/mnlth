@@ -1,7 +1,15 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalPassThroughEnv": ["VITE_CONVEX_URL", "VITE_STAGE_NAME"],
+  "globalPassThroughEnv": [
+    "VITE_CONVEX_URL",
+    "VITE_STAGE_NAME",
+    "VITE_GIT_SHA",
+    "VITE_SENTRY_DSN",
+    "SENTRY_AUTH_TOKEN",
+    "SENTRY_ORG",
+    "SENTRY_PROJECT"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -10,6 +18,9 @@
     },
     "typecheck": {
       "dependsOn": ["^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
     },
     "setup-dev": {
       "cache": false
