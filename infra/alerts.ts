@@ -31,10 +31,7 @@ export function createAlerts(name: string): Alerts {
   return { topic, global: { topic: globalTopic, provider } }
 }
 
-type AlarmArgs = Omit<
-  aws.cloudwatch.MetricAlarmArgs,
-  "alarmActions" | "okActions" | "name"
->
+type AlarmArgs = Omit<aws.cloudwatch.MetricAlarmArgs, "okActions" | "name">
 
 /**
  * A metric alarm that notifies the topic when it fires and again when it

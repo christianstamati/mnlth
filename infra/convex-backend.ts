@@ -1111,10 +1111,10 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
         )
       }
 
-      if (this.database) {
-        const db = {
-          DBInstanceIdentifier: this.database.nodes.instance.identifier,
-        }
+      // `nodes.instance` is optional on SST's database components.
+      const dbInstance = this.database?.nodes.instance
+      if (dbInstance) {
+        const db = { DBInstanceIdentifier: dbInstance.identifier }
         metricAlarm(
           `${name}DatabaseStorage`,
           alerts,
