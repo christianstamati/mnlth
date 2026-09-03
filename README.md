@@ -140,6 +140,10 @@ infra/shared.ts            production publishes shared ids to SSM; other stages 
 infra/settings.ts          loads and validates sst.settings.json
 docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
+scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local
+scripts/clone/anonymize.ts rewrites an unzipped snapshot export per the rules
+scripts/lib/stage.ts       how the scripts find a stage's URL and admin key
+packages/backend/clone/    per-field anonymization rules, checked against the schema in CI
 scripts/setup-dev.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
@@ -307,6 +311,34 @@ restart:
 bunx convex export --path snapshot.zip
 bunx convex import --replace-all snapshot.zip
 ```
+
+### Cloning data between stages
+
+`convex:clone` copies one stage's data into another stage or the local
+backend, anonymized on the way:
+
+```bash
+bun run convex:clone --from production --to dev            # cloud to cloud
+bun run convex:clone --from production --to local          # cloud to laptop
+bun run convex:clone --from production --to local --include-file-storage
+```
+
+It runs on your machine with your AWS credentials, reading the source's URL
+and admin key from SSM the way `convex:deploy` does, then exports, rewrites
+every table per `packages/backend/clone/rules.ts`, and imports with
+`convex import --replace-all` so the target ends up holding exactly the
+source's tables. Production is never a target. The work happens in a
+temporary directory that is deleted afterwards, whatever the outcome.
+
+`rules.ts` says what happens to each field: `hash`, `email` and `name` are
+stable within one clone, so references between documents survive; `redact`
+and `remove` do what they say; `file` keeps a storage reference only with
+`--include-file-storage`. Every table needs an entry (`bun test` checks that
+against the schema), and a table without one aborts the clone before
+anything is imported. Without file storage the `_storage` table is dropped,
+so fields that point at it must be optional. The import validates against
+the schema deployed on the target: push the same commit to both stages
+first.
 
 ## Operating a stage
 

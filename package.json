@@ -12,8 +12,10 @@
     "check": "biome check --write .",
     "check:ci": "biome ci .",
     "typecheck": "turbo typecheck",
+    "test": "bun test",
     "reset:aws": "bash scripts/reset-aws.sh",
-    "convex:deploy": "bun scripts/convex-deploy.ts"
+    "convex:deploy": "bun scripts/convex-deploy.ts",
+    "convex:clone": "bun scripts/convex-clone.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.9",
