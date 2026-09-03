@@ -61,8 +61,10 @@ function die(error: Error): never {
   process.exit(1)
 }
 
+// Progress goes to stdout; stderr is for failures only, so a terminal that
+// colors stderr does not paint the normal run red.
 function step(message: string) {
-  console.error(`\n> ${message}`)
+  console.log(`\n> ${message}`)
 }
 
 for (const tool of ["aws", "zip", "unzip"]) {
@@ -77,11 +79,11 @@ step(`Resolving target ${to}`)
 const target = await (to === "local" ? resolveLocal() : resolveStage(to)).catch(
   die
 )
-console.error(`  ${target.url}`)
+console.log(`  ${target.url}`)
 
 step(`Resolving source ${from}`)
 const source = await resolveStage(from).catch(die)
-console.error(`  ${source.url}`)
+console.log(`  ${source.url}`)
 
 // ---- export, anonymize, import ----------------------------------------------
 
@@ -119,10 +121,10 @@ try {
     includeFileStorage,
   })
   for (const [table, count] of Object.entries(report.rewritten)) {
-    console.error(`  ${table}: ${count} documents`)
+    console.log(`  ${table}: ${count} documents`)
   }
-  for (const table of report.dropped) console.error(`  ${table}: dropped`)
-  console.error(`  file storage: ${report.fileStorage}`)
+  for (const table of report.dropped) console.log(`  ${table}: dropped`)
+  console.log(`  file storage: ${report.fileStorage}`)
 
   const zipped = await $`zip -qr ${snapshotZip} .`.cwd(rawDir).quiet().nothrow()
   if (zipped.exitCode !== 0) {
@@ -131,7 +133,7 @@ try {
   await rm(rawDir, { recursive: true, force: true })
 
   step(`Importing into ${to} (${target.url})`)
-  console.error(
+  console.log(
     "  The import validates against the schema deployed there. Push the same\n" +
       "  commit first if the two stages differ."
   )
@@ -142,7 +144,7 @@ try {
     snapshotZip,
   ]).exited
   if (imported !== 0) throw new Error(`convex import exited with ${imported}.`)
-  console.error(`\nCloned ${from} -> ${to}.`)
+  console.log(`\nCloned ${from} -> ${to}.`)
 } catch (error) {
   console.error((error as Error).message)
   exitCode = 1

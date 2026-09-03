@@ -64,15 +64,15 @@ async function until(
   gaveUp: string
 ): Promise<void> {
   const deadline = Date.now() + WAIT_SECONDS * 1000
-  process.stderr.write(waiting)
+  process.stdout.write(waiting)
   while (!(await check())) {
     if (Date.now() > deadline) {
       throw new Error(`\nGave up after ${WAIT_SECONDS / 60} minutes. ${gaveUp}`)
     }
     await Bun.sleep(POLL_SECONDS * 1000)
-    process.stderr.write(".")
+    process.stdout.write(".")
   }
-  process.stderr.write("\n")
+  process.stdout.write("\n")
 }
 
 /**

@@ -27,7 +27,7 @@ const target = await resolveStage(stage, { wait }).catch((error: Error) => {
   process.exit(1)
 })
 
-console.error(
+console.log(
   `${dev ? "Watching" : "Deploying"} packages/backend/convex -> ${target.url}`
 )
 const proc = convex(target, dev ? ["dev"] : ["deploy", "--yes"])
