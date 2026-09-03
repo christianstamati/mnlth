@@ -39,9 +39,9 @@ export type TableRule = { drop: true } | { fields: Record<string, Strategy> }
 export const rules: Record<string, TableRule> = {
   messages: {
     fields: {
-      user: "hash",
+      user: "keep",
       username: "name",
-      body: "redact",
+      body: "keep",
     },
   },
 }
