@@ -1,13 +1,15 @@
 /**
- * Browser entry. TanStack Start picks `src/client.tsx` up by name; without
- * it the default entry does the same `hydrateStart()` call, minus Sentry.
+ * Browser entry. TanStack Start picks `src/client.tsx` up by name; this is
+ * its default entry (StrictMode, StartClient, hydrateRoot) plus Sentry.
  *
  * Sentry only initializes when a DSN is present, so a laptop and a stage
  * without one run exactly as before. Every event carries the stage and the
  * commit, so a report says which deploy it came from.
  */
 import * as Sentry from "@sentry/tanstackstart-react"
-import { hydrateStart } from "@tanstack/react-start/client"
+import { StartClient } from "@tanstack/react-start/client"
+import { StrictMode, startTransition } from "react"
+import { hydrateRoot } from "react-dom/client"
 
 const dsn = import.meta.env.VITE_SENTRY_DSN
 const stage = import.meta.env.VITE_STAGE_NAME
@@ -32,4 +34,11 @@ if (dsn) {
   })
 }
 
-hydrateStart()
+startTransition(() => {
+  hydrateRoot(
+    document,
+    <StrictMode>
+      <StartClient />
+    </StrictMode>
+  )
+})
