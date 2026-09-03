@@ -26,10 +26,16 @@ jobs:
       issues: read
       id-token: write
     steps:
+      # Until `/install-github-app` has stored the key, skip instead of
+      # failing every pull request. Secrets cannot gate a job directly.
+      - id: key
+        run: echo "present=${{ secrets.ANTHROPIC_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
+        if: steps.key.outputs.present == 'true'
         with:
           fetch-depth: 0
       - uses: anthropics/claude-code-action@v1
+        if: steps.key.outputs.present == 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           use_sticky_comment: true
