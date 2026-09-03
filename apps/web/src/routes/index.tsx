@@ -52,6 +52,10 @@ function App() {
         <ul className="flex flex-col">
           {messages === undefined ? (
             <li className="text-muted-foreground">Connecting to Convex…</li>
+          ) : messages.length === 0 ? (
+            <li className="text-muted-foreground">
+              No messages yet. Be the first to say something.
+            </li>
           ) : (
             messages.map((message) => (
               <li key={message._id}>
