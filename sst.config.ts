@@ -153,7 +153,8 @@ export default $config({
       dev: { command: "bun run dev" },
     })
 
-    if (alerts) {
+    // No server under `sst dev`: the app runs as a local Vite process.
+    if (alerts && web.nodes.server) {
       lambdaAlarms("Web", alerts, web.nodes.server.name)
     }
 
