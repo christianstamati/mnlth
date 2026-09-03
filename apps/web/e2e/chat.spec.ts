@@ -23,6 +23,12 @@ test("shows the stage and commit", { tag: "@smoke" }, async ({ page }) => {
 test("sends a message through Convex", async ({ page }) => {
   const body = `e2e ${Date.now()}`
   await page.goto("/")
+  // The inputs are controlled: typing before React hydrates leaves its
+  // state empty and the submit handler drops the message. The query
+  // delivering is the signal that the client is hydrated and connected.
+  await expect(page.getByText("Connecting to Convex…")).toBeHidden({
+    timeout: 15_000,
+  })
   await page.getByPlaceholder("Your name").fill("playwright")
   await page.getByPlaceholder("Say something to Convex").fill(body)
   await page.getByRole("button", { name: "Send" }).click()
