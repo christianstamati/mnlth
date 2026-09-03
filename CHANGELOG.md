@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/christianstamati/mnlth/compare/v1.0.1...v1.1.0) (2026-09-03)
+
+
+### Features
+
+* anonymized clone of a stage's data into another stage or local ([17d69f3](https://github.com/christianstamati/mnlth/commit/17d69f3b8aed0da6ab84771a71c8c61e078174a0))
+
+
+### Bug Fixes
+
+* **clone:** anonymize only the username in messages ([63af3cc](https://github.com/christianstamati/mnlth/commit/63af3cceeec4f0a5b4ce0400f657ae36ea53cbc4))
+* **scripts:** print progress on stdout, keep stderr for failures ([fa23ae1](https://github.com/christianstamati/mnlth/commit/fa23ae1c59eac9b591ea093b03c86598ac7c8349))
+
 ## [1.0.1](https://github.com/christianstamati/mnlth/compare/v1.0.0...v1.0.1) (2026-09-02)
 
 
