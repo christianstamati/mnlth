@@ -28,6 +28,9 @@ jobs:
         with:
           bun-version: "1.4.0"
       - run: bun install --frozen-lockfile
+      # The SST platform types (`aws`, `$app`, ...) that sst.config.ts and
+      # infra/ typecheck against. Downloads only; no AWS credentials.
+      - run: bun sst install
       - run: bun run check:ci
       - run: bun run typecheck
       - run: bun run test

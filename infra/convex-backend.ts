@@ -1194,6 +1194,7 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
       publicIp: this.publicIp,
       instanceId: this.instanceId,
       adminKeyParameter: this._adminKeyParameter.name,
+      urlParameter: this._urlParameter.name,
     })
   }
 
@@ -1238,6 +1239,15 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
    */
   get adminKeyParameter(): $util.Output<string> {
     return this._adminKeyParameter.name
+  }
+
+  /**
+   * SSM path of the API URL, `/<app>/<stage>/convex/url`. What
+   * `scripts/convex-deploy.ts` reads to find the deployment from the stage
+   * name alone.
+   */
+  get urlParameter(): $util.Output<string> {
+    return this._urlParameter.name
   }
 
   /** The managed database's hostname, or undefined with SQLite. */
