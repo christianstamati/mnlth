@@ -1,0 +1,45 @@
+# Claude reviews every ready pull request from this repository, once per
+# push, in one sticky comment. Forks are skipped: the review needs the API
+# key. So are dependency and release PRs, which have nothing to review.
+#
+# Setup: `/install-github-app` from Claude Code installs the GitHub App and
+# stores ANTHROPIC_API_KEY as a repository secret. CLAUDE.md is the house
+# style the review is held to.
+name: claude review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      github.actor != 'renovate[bot]' &&
+      !startsWith(github.head_ref, 'changeset-release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          use_sticky_comment: true
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            Read CLAUDE.md first; its "Review focus" section is the checklist.
+            Report correctness bugs, security problems in infra/ and convex/,
+            and anything that would break a stage deploy or leak a credential
+            into the client bundle. Skip formatting and style: Biome owns
+            those. Be specific: file, line, why, and the fix. If nothing is
+            wrong, say so in one line.
+          claude_args: '--allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(bun run check:ci),Bash(bun run typecheck)"'

@@ -8,7 +8,8 @@
     "dev": "convex dev",
     "deploy": "convex deploy",
     "dashboard": "convex dashboard",
-    "typecheck": "tsc --noEmit -p convex"
+    "typecheck": "tsc --noEmit -p convex",
+    "test": "vitest run"
   },
   "exports": {
     "./convex/*": "./convex/*.js"
@@ -17,7 +18,11 @@
     "convex": "^1.45.0"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
     "@types/node": "^22",
-    "typescript": "^6"
+    "convex-test": "0.0.56",
+    "typescript": "^6",
+    "vite": "8",
+    "vitest": "5.0.0"
   }
 }

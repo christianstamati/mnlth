@@ -1,0 +1,45 @@
+name: Bug report
+description: Something is broken on a deployed stage or in local development.
+labels: [bug]
+body:
+  - type: input
+    id: stage
+    attributes:
+      label: Stage and commit
+      description: The footer in the bottom-right corner of every page, e.g. `production · 3f2a1c9`. `local` for a laptop.
+      placeholder: production · 3f2a1c9
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: URL
+      placeholder: https://fullstackaws.dev/
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the page
+        2. Type a name and a message
+        3. Press Send
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Error text, a screenshot, the browser console if it says anything.
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: Safari 26 on macOS

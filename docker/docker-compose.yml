@@ -4,7 +4,7 @@ name: convex-backend
 
 services:
   backend:
-    image: ghcr.io/get-convex/convex-backend:latest
+    image: ghcr.io/get-convex/convex-backend:latest@sha256:1f2044e3eac463ac78973b136c0baf72d4ada602611d853d6f99f280e29e0a98
     stop_grace_period: 10s
     stop_signal: SIGINT
     restart: unless-stopped
@@ -58,7 +58,7 @@ services:
       start_period: 10s
 
   dashboard:
-    image: ghcr.io/get-convex/convex-dashboard:latest
+    image: ghcr.io/get-convex/convex-dashboard:latest@sha256:284a2638e0c1a4ec0c2327d8219776f3a426ca5824b81686ae4d9454dc0ce8ed
     stop_grace_period: 10s
     stop_signal: SIGINT
     restart: unless-stopped

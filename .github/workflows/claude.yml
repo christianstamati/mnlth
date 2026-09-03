@@ -1,0 +1,37 @@
+# Mention @claude in a pull request or issue comment and it answers there:
+# a question, a change pushed to the PR branch, a follow-up on the review.
+# Only members of this repository can trigger it, so the key is never spent
+# on a stranger's comment.
+name: claude
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    if: >-
+      contains(github.event.comment.body || github.event.review.body || github.event.issue.body, '@claude') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: '--allowed-tools "Bash(bun install),Bash(bun run check),Bash(bun run check:ci),Bash(bun run typecheck),Bash(bun test:*),Bash(bun changeset:*),Bash(gh pr:*),Bash(gh issue:*)"'

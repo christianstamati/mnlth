@@ -1,8 +1,9 @@
-# Every push to main updates the release pull request: it bumps the version
-# in package.json, writes CHANGELOG.md from the conventional commits since
-# the last tag, and lists them. Merging it tags the commit and publishes the
-# GitHub Release; that merge is a push to main, so production deploys as
-# for any other push.
+# Every push to main updates the release pull request: `changeset version`
+# consumes the files in .changeset/, bumps the version in
+# apps/web/package.json, and writes CHANGELOG.md. Merging that PR runs
+# `changeset publish`, which for private packages only tags (`web@1.2.0`);
+# the action then publishes the GitHub Release. That merge is a push to main,
+# so production deploys as for any other push.
 #
 # The Slack post lives here rather than on a `release` event: a release
 # created with the workflow token does not trigger other workflows.
@@ -16,24 +17,36 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  release-please:
+  changesets:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      created: ${{ steps.release.outputs.release_created }}
-      tag: ${{ steps.release.outputs.tag_name }}
-      url: ${{ steps.release.outputs.html_url }}
-      body: ${{ steps.release.outputs.body }}
+      published: ${{ steps.changesets.outputs.published }}
+      packages: ${{ steps.changesets.outputs.publishedPackages }}
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
         with:
-          release-type: node
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - uses: changesets/action@v1
+        id: changesets
+        with:
+          version: bun run version
+          publish: bun run release
+          title: "chore: release"
+          commit: "chore: release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   slack:
-    needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    needs: changesets
+    if: needs.changesets.outputs.published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
@@ -43,10 +56,26 @@ jobs:
         with:
           sparse-checkout: scripts/release-slack.sh
           sparse-checkout-cone-mode: false
+      # The fixed group publishes one tag per package; the app's is the one
+      # to announce.
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES: ${{ needs.changesets.outputs.packages }}
+        run: |
+          version=$(jq -r '.[] | select(.name == "web") | .version' <<< "$PACKAGES")
+          tag="web@$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          gh release view "$tag" --json url,body --jq '"url=" + .url' >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<BODY_EOF"
+            gh release view "$tag" --json body --jq .body
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
       - run: bash scripts/release-slack.sh
         env:
           REPO: ${{ github.event.repository.name }}
-          TAG: ${{ needs.release-please.outputs.tag }}
-          URL: ${{ needs.release-please.outputs.url }}
-          BODY: ${{ needs.release-please.outputs.body }}
+          TAG: ${{ steps.release.outputs.tag }}
+          URL: ${{ steps.release.outputs.url }}
+          BODY: ${{ steps.release.outputs.body }}
           WEBHOOK: ${{ secrets.SLACK_RELEASES_WEBHOOK }}

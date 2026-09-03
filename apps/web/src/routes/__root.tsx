@@ -40,8 +40,26 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         {children}
+        <BuildFooter />
         <Scripts />
       </body>
     </html>
+  )
+}
+
+/**
+ * Which deploy this is, on every page. The cheapest thing that improves a
+ * bug report: "production at 3f2a1c9" says exactly what to look at.
+ */
+function BuildFooter() {
+  const stage = import.meta.env.VITE_STAGE_NAME || "local"
+  const sha = import.meta.env.VITE_GIT_SHA?.slice(0, 7) || "dev"
+  return (
+    <footer
+      className="fixed right-3 bottom-3 font-mono text-muted-foreground text-xs"
+      data-testid="build"
+    >
+      {stage} · {sha}
+    </footer>
   )
 }

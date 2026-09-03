@@ -1,8 +1,10 @@
 # Every pull request from this repository gets its own stage, `pr-<number>`,
-# redeployed on each push and removed by remove-pr.yml when it closes.
-# Forks are skipped: they cannot assume the AWS role. Drafts are skipped
-# until marked ready, so a work-in-progress PR costs no EC2 box. So is the
-# release-please PR: it only bumps the version and changelog.
+# redeployed on each push, tested with Playwright, and removed by
+# remove-pr.yml when it closes.
+#
+# Skipped: forks (cannot assume the AWS role), drafts (until marked ready),
+# Renovate and the release PR (dependency bumps and version bumps get the
+# hermetic e2e job in ci.yml instead of a box each).
 name: deploy pr
 
 on:
@@ -19,7 +21,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft &&
       github.actor != 'dependabot[bot]' &&
-      !startsWith(github.head_ref, 'release-please--')
+      github.actor != 'renovate[bot]' &&
+      !startsWith(github.head_ref, 'changeset-release/')
     # A called workflow can only use what its caller grants.
     permissions:
       id-token: write
@@ -31,13 +34,49 @@ jobs:
       stage: pr-${{ github.event.pull_request.number }}
       environment: preview
 
-  comment:
+  # The full suite against the real stage: Lambda, CloudFront, the box.
+  # Previews are thrown away, so specs may write.
+  e2e:
     needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run e2e
+        working-directory: apps/web
+        env:
+          CI: "true"
+          E2E_BASE_URL: ${{ needs.deploy.outputs.web_url }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-pr-${{ github.event.pull_request.number }}
+          path: apps/web/playwright-report
+          retention-days: 7
+
+  comment:
+    needs: [deploy, e2e]
+    if: always() && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
       pull-requests: write
     steps:
+      # Linear links the PR to the issue on its own; this links back, so the
+      # preview is one click from the ticket too.
+      - id: linear
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          key=$(printf '%s' "$BRANCH" | grep -oiE '\bmnl-[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]' || true)
+          if [ -n "$key" ]; then
+            echo "row=| Issue | [$key](https://linear.app/mnlth/issue/$key) |" >> "$GITHUB_OUTPUT"
+          fi
       - uses: peter-evans/find-comment@v3
         id: find
         with:
@@ -56,5 +95,7 @@ jobs:
             | Web | ${{ needs.deploy.outputs.web_url }} |
             | Convex | ${{ needs.deploy.outputs.convex_url }} |
             | Dashboard | ${{ needs.deploy.outputs.convex_dashboard_url }} |
+            | Playwright | ${{ needs.e2e.result == 'success' && ':white_check_mark: passed' || format(':x: {0}', needs.e2e.result) }} |
+            ${{ steps.linear.outputs.row }}
 
             Redeployed on every push. Removed when this pull request closes.

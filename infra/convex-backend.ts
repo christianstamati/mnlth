@@ -2,6 +2,8 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import type { Alerts } from "./alerts"
+import { metricAlarm } from "./alerts"
 
 /**
  * A self-hosted Convex backend on one EC2 instance.
@@ -57,9 +59,10 @@ const COMPOSE_FILE = readFileSync(
 // certificate storage. Caddy's download API compiles that on request, which
 // took seven minutes per boot, so the build is published once as a release
 // asset of https://github.com/christianstamati/caddy-linux-arm64 and the
-// instance only downloads the latest one.
+// instance only downloads it. Pinned to a release so a rebuilt box runs the
+// tested binary; Renovate bumps it (customManagers in renovate.json).
 const CADDY_DOWNLOAD_URL =
-  "https://github.com/christianstamati/caddy-linux-arm64/releases/latest/download/caddy-linux-arm64"
+  "https://github.com/christianstamati/caddy-linux-arm64/releases/download/v2.24.1/caddy-linux-arm64"
 
 // Convex ports, all bound to loopback by the compose file.
 const PORT = { api: 3210, site: 3211, dashboard: 6791 }
@@ -173,6 +176,17 @@ export interface ConvexBackendArgs {
    * @default false
    */
   letsEncryptStaging?: boolean
+  /**
+   * Watch the instance and notify these topics. Installs the CloudWatch
+   * agent for memory and disk (EC2 publishes neither), ships the container
+   * logs to the log group `/<app>/<stage>/convex` through Docker's awslogs
+   * driver, and creates alarms: system status check (with EC2 recovery),
+   * CPU credit balance, memory, disk, backend errors in the logs, the
+   * managed database if there is one, and a Route 53 health check on
+   * `/version` over HTTPS. Meant for production and staging only: the
+   * agent's metrics are billed per metric and PR stages are short-lived.
+   */
+  monitoring?: Alerts
   /**
    * Escape hatch: override the args of the underlying resources.
    */
@@ -528,6 +542,18 @@ export class ConvexBackend extends $util.ComponentResource {
       { parent }
     )
 
+    // The CloudWatch agent's metrics and the awslogs driver's log writes.
+    if (args.monitoring) {
+      new aws.iam.RolePolicyAttachment(
+        `${name}CloudWatchAgent`,
+        {
+          role: this.role.name,
+          policyArn: "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+        },
+        { parent }
+      )
+    }
+
     const policy = new aws.iam.RolePolicy(
       `${name}Policy`,
       {
@@ -714,6 +740,65 @@ curl -fsSL --retry 3 -o certs/rds-ca.pem \\
   https://truststore.pki.rds.amazonaws.com/${region}/${region}-bundle.pem`
         : ""
 
+    // ---- monitoring -------------------------------------------------------
+
+    // Container logs land here through Docker's awslogs driver, one stream
+    // per container name. Created ahead of the instance so the driver never
+    // has to, and with a retention so it never grows forever.
+    const logGroup = args.monitoring
+      ? new aws.cloudwatch.LogGroup(
+          `${name}Logs`,
+          {
+            name: `/${$app.name}/${$app.stage}/convex`,
+            retentionInDays: 30,
+          },
+          { parent }
+        )
+      : undefined
+
+    // Docker's default log driver, set before the engine starts. Dual
+    // logging keeps a local copy, so `docker compose logs` still works on
+    // the box. Without monitoring the file stays absent: json-file, as on a
+    // laptop.
+    const dockerDaemonConfig = logGroup
+      ? $interpolate`cat > /etc/docker/daemon.json <<'EOF'
+{
+  "log-driver": "awslogs",
+  "log-opts": {
+    "awslogs-region": "${region}",
+    "awslogs-group": "${logGroup.name}",
+    "tag": "{{.Name}}"
+  }
+}
+EOF`
+      : ""
+
+    // The agent publishes what EC2 does not: memory and root disk usage,
+    // under the CWAgent namespace with InstanceId as the only dimension, so
+    // the alarms below can find them.
+    const monitoringSetup = args.monitoring
+      ? `# ---- monitoring ----
+
+dnf install -y amazon-cloudwatch-agent
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'EOF'
+{
+  "agent": { "metrics_collection_interval": 60 },
+  "metrics": {
+    "namespace": "CWAgent",
+    "append_dimensions": { "InstanceId": "\${aws:InstanceId}" },
+    "aggregation_dimensions": [["InstanceId"]],
+    "metrics_collected": {
+      "mem": { "measurement": ["mem_used_percent"] },
+      "disk": { "measurement": ["disk_used_percent"], "resources": ["/"], "drop_device": true }
+    }
+  }
+}
+EOF
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \\
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+`
+      : ""
+
     const userData = $interpolate`#!/bin/bash
 # No -x: this script handles the instance secret and the admin key, and
 # everything it echoes lands in the cloud-init log.
@@ -733,8 +818,11 @@ curl -fsSL --retry 3 -o /usr/local/lib/docker/cli-plugins/docker-compose \\
   https://github.com/docker/compose/releases/download/${COMPOSE_PLUGIN_VERSION}/docker-compose-linux-aarch64
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
+${dockerDaemonConfig}
+
 systemctl enable --now docker
 
+${monitoringSetup}
 # ---- caddy ----
 
 # Prebuilt with the plugins above; see CADDY_DOWNLOAD_URL.
@@ -917,6 +1005,185 @@ aws ssm put-parameter --name '${this._adminKeyParameter.name}' \\
           records: [this.publicIp],
         },
         { parent }
+      )
+    }
+
+    // ---- alarms -----------------------------------------------------------
+
+    if (args.monitoring) {
+      const alerts = args.monitoring
+      const instance = { InstanceId: this.instance.id }
+
+      // The hypervisor's own check. Failing it means the host is gone; the
+      // recover action moves the instance to new hardware with the same id,
+      // address and volume.
+      metricAlarm(
+        `${name}SystemCheck`,
+        alerts,
+        {
+          alarmDescription: "EC2 system status check failed",
+          namespace: "AWS/EC2",
+          metricName: "StatusCheckFailed_System",
+          dimensions: instance,
+          statistic: "Maximum",
+          period: 60,
+          evaluationPeriods: 3,
+          threshold: 0,
+          comparisonOperator: "GreaterThanThreshold",
+          alarmActions: [$interpolate`arn:aws:automate:${region}:ec2:recover`],
+        },
+        { parent }
+      )
+
+      // t4g is burstable. A balance trending to zero means the box is too
+      // small for its load, not momentarily busy.
+      metricAlarm(
+        `${name}CpuCredits`,
+        alerts,
+        {
+          alarmDescription: "CPU credit balance is running out",
+          namespace: "AWS/EC2",
+          metricName: "CPUCreditBalance",
+          dimensions: instance,
+          statistic: "Average",
+          period: 300,
+          evaluationPeriods: 3,
+          threshold: 20,
+          comparisonOperator: "LessThanThreshold",
+        },
+        { parent }
+      )
+
+      for (const [key, metricName, threshold, what] of [
+        ["Memory", "mem_used_percent", 85, "Memory"],
+        ["Disk", "disk_used_percent", 80, "Root disk"],
+      ] as const) {
+        metricAlarm(
+          `${name}${key}`,
+          alerts,
+          {
+            alarmDescription: `${what} usage is above ${threshold}%`,
+            namespace: "CWAgent",
+            metricName,
+            dimensions: instance,
+            statistic: "Average",
+            period: 300,
+            evaluationPeriods: 2,
+            threshold,
+            comparisonOperator: "GreaterThanThreshold",
+          },
+          { parent }
+        )
+      }
+
+      // The backend logs at the Rust tracing levels; ERROR lines are rare in
+      // normal operation, so a burst of them is worth a look.
+      if (logGroup) {
+        const metricNamespace = `${$app.name}/${$app.stage}`
+        new aws.cloudwatch.LogMetricFilter(
+          `${name}ErrorFilter`,
+          {
+            logGroupName: logGroup.name,
+            pattern: '"ERROR"',
+            metricTransformation: {
+              name: "BackendErrors",
+              namespace: metricNamespace,
+              value: "1",
+              defaultValue: "0",
+            },
+          },
+          { parent }
+        )
+        metricAlarm(
+          `${name}Errors`,
+          alerts,
+          {
+            alarmDescription: "The Convex backend is logging errors",
+            namespace: metricNamespace,
+            metricName: "BackendErrors",
+            statistic: "Sum",
+            period: 300,
+            evaluationPeriods: 1,
+            threshold: 5,
+            comparisonOperator: "GreaterThanThreshold",
+          },
+          { parent }
+        )
+      }
+
+      if (this.database) {
+        const db = {
+          DBInstanceIdentifier: this.database.nodes.instance.identifier,
+        }
+        metricAlarm(
+          `${name}DatabaseStorage`,
+          alerts,
+          {
+            alarmDescription: "The database has under 2 GiB free",
+            namespace: "AWS/RDS",
+            metricName: "FreeStorageSpace",
+            dimensions: db,
+            statistic: "Minimum",
+            period: 300,
+            evaluationPeriods: 1,
+            threshold: 2 * 1024 * 1024 * 1024,
+            comparisonOperator: "LessThanThreshold",
+          },
+          { parent }
+        )
+        metricAlarm(
+          `${name}DatabaseCpu`,
+          alerts,
+          {
+            alarmDescription: "Database CPU is above 80%",
+            namespace: "AWS/RDS",
+            metricName: "CPUUtilization",
+            dimensions: db,
+            statistic: "Average",
+            period: 300,
+            evaluationPeriods: 3,
+            threshold: 80,
+            comparisonOperator: "GreaterThanThreshold",
+          },
+          { parent }
+        )
+      }
+
+      // From outside the box: Route 53 probes the API host over HTTPS from
+      // several regions, so this catches a dead Caddy, an expired
+      // certificate or a wrong DNS record, which nothing above would. Its
+      // metric only exists in us-east-1, so the alarm and its topic live
+      // there too.
+      const healthCheck = new aws.route53.HealthCheck(
+        `${name}HealthCheck`,
+        {
+          type: "HTTPS",
+          fqdn: this._hosts.api,
+          port: 443,
+          resourcePath: "/version",
+          requestInterval: 30,
+          failureThreshold: 3,
+          tags: { Name: `${$app.name}-${$app.stage}-convex-api` },
+        },
+        { parent }
+      )
+      new aws.cloudwatch.MetricAlarm(
+        `${name}Unreachable`,
+        {
+          alarmDescription: "The Convex API is not answering over HTTPS",
+          namespace: "AWS/Route53",
+          metricName: "HealthCheckStatus",
+          dimensions: { HealthCheckId: healthCheck.id },
+          statistic: "Minimum",
+          period: 60,
+          evaluationPeriods: 2,
+          threshold: 1,
+          comparisonOperator: "LessThanThreshold",
+          treatMissingData: "breaching",
+          alarmActions: [alerts.global.topic.arn],
+          okActions: [alerts.global.topic.arn],
+        },
+        { parent, provider: alerts.global.provider }
       )
     }
 

@@ -1,5 +1,10 @@
-# Lint and typecheck on every push and pull request. No AWS: this is the
-# check `main` requires before a merge, and it runs for forks too.
+# Lint, typecheck and test on every push and pull request. No AWS: this is
+# the check `main` requires before a merge, and it runs for forks too.
+#
+# Two jobs. `check` is fast and is the required status. `e2e` brings the
+# Convex stack up in Docker on the runner, exactly as `bun dev` does on a
+# laptop, and runs the Playwright specs against Vite: hermetic, so it runs
+# for dependency PRs and forks, which never get a preview stage.
 name: ci
 
 on:
@@ -16,6 +21,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # `changeset status` compares against main.
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.0"
@@ -23,3 +31,44 @@ jobs:
       - run: bun run check:ci
       - run: bun run typecheck
       - run: bun run test
+
+      # Every PR that changes what ships says so in .changeset/. Dependency
+      # and release PRs are labelled out of it.
+      - name: changeset present
+        if: >-
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'no changeset') &&
+          github.actor != 'renovate[bot]' &&
+          !startsWith(github.head_ref, 'changeset-release/')
+        run: bun changeset status --since=origin/main
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+
+      # The compose stack, the admin key and both .env.local files, as on a
+      # laptop. Then the functions, which the backend starts without.
+      - name: start the local backend
+        run: bun scripts/setup-dev.ts
+      - name: push convex functions
+        run: bunx convex deploy --yes
+        working-directory: packages/backend
+
+      # playwright.config.ts starts Vite itself when E2E_BASE_URL is unset.
+      - run: bun run e2e
+        working-directory: apps/web
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-local
+          path: apps/web/playwright-report
+          retention-days: 7
