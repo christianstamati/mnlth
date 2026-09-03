@@ -39,6 +39,10 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # track_progress creates one tracking comment on the PR and gives
+          # Claude the tool to write the review into it. Without it, a custom
+          # prompt runs in agent mode and the answer is never posted anywhere.
+          track_progress: true
           use_sticky_comment: true
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
@@ -48,5 +52,6 @@ jobs:
             and anything that would break a stage deploy or leak a credential
             into the client bundle. Skip formatting and style: Biome owns
             those. Be specific: file, line, why, and the fix. If nothing is
-            wrong, say so in one line.
+            wrong, say so in one line. Write the review into the tracking
+            comment; that is the only place it is read.
           claude_args: '--allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(bun run check:ci),Bash(bun run typecheck)"'
