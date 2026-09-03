@@ -16,7 +16,6 @@
     "e2e": "bun run --cwd apps/web e2e",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "changeset publish",
     "reset:aws": "bash scripts/reset-aws.sh",
     "convex:deploy": "bun scripts/convex-deploy.ts",
     "convex:clone": "bun scripts/convex-clone.ts"
