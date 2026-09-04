@@ -27,7 +27,7 @@ export function createSharedDataBucket(): sst.aws.Bucket {
   const bucket = new sst.aws.Bucket("SharedData")
 
   // Snapshots are for one download; nothing else in the bucket expires.
-  new aws.s3.BucketLifecycleConfigurationV2("SharedDataLifecycle", {
+  new aws.s3.BucketLifecycleConfiguration("SharedDataLifecycle", {
     bucket: bucket.name,
     rules: [
       {
