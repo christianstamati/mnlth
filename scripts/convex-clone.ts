@@ -12,7 +12,8 @@
  * the `<app>-clone-developer` policy: start the project, read its log,
  * fetch a snapshot. No access to any stage's parameters.
  *
- *   1. read the bucket and log group from the project definition
+ *   1. read the bucket, its snapshots prefix and the log group from the
+ *      project definition
  *   2. start a build with the stage names as environment overrides
  *   3. follow the build's log until it ends, printing every line
  *   4. for a stage target, stop here: the import happened in the cloud.
@@ -111,12 +112,13 @@ if (!project) {
     )
   )
 }
-const bucket = project.environment.environmentVariables.find(
-  (v) => v.name === "SNAPSHOT_BUCKET"
-)?.value
+const variable = (name: string) =>
+  project.environment.environmentVariables.find((v) => v.name === name)?.value
+const bucket = variable("SNAPSHOT_BUCKET")
+const prefix = variable("SNAPSHOT_PREFIX")
 const logGroup = project.logsConfig.cloudWatchLogs.groupName
-if (!bucket || !logGroup) {
-  die(new Error(`${PROJECT} has no snapshot bucket or log group.`))
+if (!bucket || !prefix || !logGroup) {
+  die(new Error(`${PROJECT} has no snapshot bucket, prefix or log group.`))
 }
 
 // The GitHub connection is created pending and authorized by hand once.
@@ -144,7 +146,7 @@ if (connectionArn) {
 
 // ---- start and follow -------------------------------------------------------
 
-const key = `${from}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.zip`
+const key = `${prefix}/${from}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.zip`
 const overrides = [
   { name: "CLONE_FROM", value: from },
   { name: "CLONE_TO", value: to },

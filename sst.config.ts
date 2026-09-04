@@ -42,25 +42,29 @@ export default $config({
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
     const { CloneJob } = await import("./infra/clone-job")
+    const { createSharedDataBucket, SHARED_DATA } = await import(
+      "./infra/shared-data"
+    )
 
     const isProduction = $app.stage === "production"
 
     // ---- shared -----------------------------------------------------------
 
-    // Production creates the VPC, the certificate bucket and the router, and
+    // Production creates the VPC, the shared data bucket and the router, and
     // publishes their ids to SSM; every other stage reads them back from
     // there. See `infra/shared.ts`.
     let vpc: sst.aws.Vpc
-    let certificateBucket: sst.aws.Bucket
+    let sharedData: sst.aws.Bucket
     let router: sst.aws.Router
 
     if (isProduction) {
       // Defaults: two AZs, public and private subnets, no NAT gateway. Free.
       vpc = new sst.aws.Vpc("Vpc")
 
-      // Holds the `*.<domain>` certificate and its private key. Not public,
-      // encrypted at rest by default, and only the instance roles touch it.
-      certificateBucket = new sst.aws.Bucket("Certificates")
+      // One bucket for what every stage and tool shares, a prefix each:
+      // Caddy's `*.<domain>` certificate and key under `certificates/`,
+      // clone snapshots under `snapshots/`. See `infra/shared-data.ts`.
+      sharedData = createSharedDataBucket()
 
       // One CloudFront distribution for every stage's web app: the apex for
       // production, `<stage>.<domain>` for the rest. The wildcard alias is
@@ -73,16 +77,13 @@ export default $config({
 
       publishSharedIds({
         vpcId: vpc.id,
-        certificateBucket: certificateBucket.name,
+        sharedDataBucket: sharedData.name,
         routerDistributionId: router.distributionID,
       })
     } else {
       const shared = await readSharedIds()
       vpc = sst.aws.Vpc.get("Vpc", shared.vpcId)
-      certificateBucket = sst.aws.Bucket.get(
-        "Certificates",
-        shared.certificateBucket
-      )
+      sharedData = sst.aws.Bucket.get("SharedData", shared.sharedDataBucket)
       router = sst.aws.Router.get("Router", shared.routerDistributionId)
     }
 
@@ -90,7 +91,8 @@ export default $config({
 
     const convex = new ConvexBackend("Convex", {
       vpc,
-      certificateBucket,
+      certificateBucket: sharedData,
+      certificatePrefix: SHARED_DATA.certificates,
       domain,
       // Flat names, so one `*.<domain>` certificate covers every stage.
       prefix: isProduction ? "" : `${$app.stage}-`,
@@ -122,6 +124,8 @@ export default $config({
       ? new CloneJob("Clone", {
           repository: "christianstamati/mnlth",
           bunVersion: "1.4.0",
+          bucket: sharedData,
+          prefix: SHARED_DATA.snapshots,
         })
       : undefined
 
