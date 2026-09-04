@@ -1,8 +1,8 @@
 /// <reference path="../.sst/platform/config.d.ts" />
 
 /**
- * The one bucket production owns, `<app>-assets`, for what every stage and
- * every tool shares, one prefix each:
+ * The one bucket production owns for what every stage and every tool
+ * shares, one prefix each:
  *
  *   certificates/   Caddy's wildcard certificate, its private key, the ACME
  *                   account and the lock it takes before issuing. Every
@@ -16,29 +16,24 @@
  * (`infra/shared.ts`); the other stages read it back and attach to it.
  */
 
-export const ASSETS = {
+export const SHARED_DATA = {
   certificates: "certificates",
   snapshots: "snapshots",
 } as const
 
 /** The bucket and its lifecycle. Production only; see `sst.config.ts`. */
-export function createAssetsBucket(): sst.aws.Bucket {
+export function createSharedDataBucket(): sst.aws.Bucket {
   // Not public and encrypted at rest, the component's defaults.
-  const bucket = new sst.aws.Bucket("Assets", {
-    // A fixed, global name (`<app>-assets`) rather than the generated one.
-    // After an `sst remove` that retained it, delete it by hand before the
-    // next deploy, or the create fails on the name.
-    transform: { bucket: { bucket: `${$app.name}-assets` } },
-  })
+  const bucket = new sst.aws.Bucket("SharedData")
 
   // Snapshots are for one download; nothing else in the bucket expires.
-  new aws.s3.BucketLifecycleConfigurationV2("AssetsLifecycle", {
+  new aws.s3.BucketLifecycleConfigurationV2("SharedDataLifecycle", {
     bucket: bucket.name,
     rules: [
       {
         id: "expire-snapshots",
         status: "Enabled",
-        filter: { prefix: `${ASSETS.snapshots}/` },
+        filter: { prefix: `${SHARED_DATA.snapshots}/` },
         expiration: { days: 1 },
         abortIncompleteMultipartUpload: { daysAfterInitiation: 1 },
       },
