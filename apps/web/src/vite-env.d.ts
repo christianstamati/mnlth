@@ -6,8 +6,6 @@ interface ImportMetaEnv {
   /** The commit the bundle was built from. */
   readonly VITE_GIT_SHA: string
   readonly VITE_CONVEX_URL: string
-  /** Sentry project DSN. Empty disables error reporting. */
-  readonly VITE_SENTRY_DSN: string
 }
 
 interface ImportMeta {

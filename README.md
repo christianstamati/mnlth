@@ -13,10 +13,8 @@ described in SST and deployed by `git push`.
   are minted by the backend and kept in SSM. No secrets live in GitHub.
 - **Runs on a laptop with only Docker.** `bun dev` brings up the same
   compose stack the servers run.
-- **The loop around the code.** Renovate keeps dependencies current, Claude
-  reviews every pull request, Playwright runs against each preview and
-  production, Changesets write the release notes, and CloudWatch, Sentry and
-  Slack say when something breaks. See [Working on it](#working-on-it).
+- **The loop around the code.** Slack says when a deploy lands. See
+  [Working on it](#working-on-it).
 
 ## Quick start
 
@@ -97,9 +95,7 @@ const messages = useQuery(api.chat.getMessages)
 | Infrastructure | [SST v4](https://sst.dev) with a custom `ConvexBackend` component | `sst.config.ts`, `infra/` |
 | Delivery | GitHub Actions, OIDC to AWS, one reusable deploy workflow | `.github/workflows` |
 | Tooling | Bun, Turborepo, Biome, TypeScript 6 | |
-| Tests | Vitest + convex-test for functions, Playwright for the app, `bun test` for scripts | `ci.yml` locally; `deploy-pr.yml` against previews |
-| Releases | Changesets, GitHub Releases, Slack | `.changeset/`, `release.yml` |
-| Watching | CloudWatch alarms + agent, Route 53 health check, Sentry | `infra/alerts.ts`, `apps/web/src/client.tsx` |
+| Tests | Vitest + convex-test for functions, `bun test` for scripts | `ci.yml` |
 
 ## Architecture
 
@@ -142,11 +138,8 @@ time. Production deploys first and is removed last.
 apps/web/                  TanStack Start app (Nitro aws-lambda preset in vite.config.ts)
 packages/backend/convex/   Convex schema and functions
 packages/ui/               shadcn/ui components, Tailwind config, global CSS
-infra/convex-backend.ts    the ConvexBackend component: instance, Caddy, DNS, SSM, S3, RDS, alarms
-infra/alerts.ts            SNS topics and alarm helpers; production and staging only
-apps/web/e2e/              Playwright specs; @smoke ones are read-only and run against production
+infra/convex-backend.ts    the ConvexBackend component: instance, Caddy, DNS, SSM, S3, RDS
 packages/backend/convex/*.test.ts  function tests with convex-test, run by vitest
-.changeset/                one file per pull request; release.yml turns them into versions
 CLAUDE.md                  house rules for reviewers and agents
 infra/shared.ts            production publishes shared ids to SSM; other stages read them
 infra/settings.ts          loads and validates sst.settings.json
@@ -188,22 +181,17 @@ certificate, mints its admin key); later pushes take a few.
 
 | Workflow | Runs on | Does |
 | --- | --- | --- |
-| `ci.yml` | every push and PR | Biome, typecheck, tests, changeset present; Playwright against a Docker backend on the runner |
+| `ci.yml` | every push and PR | Biome, typecheck, tests |
 | `deploy.yml` | called by the others | the one deploy job, then a Slack post to `#deploys` |
-| `deploy-branch.yml` | push | maps the branch through `stages`, deploys, runs the `@smoke` specs |
-| `deploy-pr.yml` | PR opened, pushed, reopened, ready for review | deploys `pr-N`, runs every spec against it, comments |
+| `deploy-branch.yml` | push | maps the branch through `stages` and deploys |
+| `deploy-pr.yml` | PR opened, pushed, reopened, ready for review | deploys `pr-N` and comments its URLs |
 | `remove-pr.yml` | PR closed | `sst remove --stage pr-N`, drops its state |
 | `sweep-stages.yml` | Mondays, or by hand | removes `pr-*` stages whose PR is closed |
-| `release.yml` | push to `main` | keeps the release PR current; on merge tags, publishes, posts to `#releases` |
-| `claude-review.yml` | PR ready | Claude reviews the diff against `CLAUDE.md` |
-| `claude.yml` | `@claude` in a comment | Claude answers or pushes a change |
 | `manual.yml` | Actions tab | `deploy`, `remove`, `unlock` or `refresh` any stage |
 
 `main` is protected by a ruleset: pull requests only, squash merges, the
 `check` job green, no force pushes. Production deploys wait for one approval
-in the `production` GitHub Environment. Renovate and the release pull
-request skip previews and the review; the hermetic Playwright job in
-`ci.yml` still covers them.
+in the `production` GitHub Environment.
 
 `unlock` is for a job that died mid-deploy and left the state lock behind;
 `refresh` for after something was changed by hand in AWS.
@@ -244,7 +232,6 @@ Actions is the deploy engine, and both would race for the state lock.
   "domain": "fullstackaws.dev",
   "region": "eu-central-1",
   "protect": ["production"],
-  "monitored": ["production", "staging"],
   "removal": { "production": "retain", "*": "remove" },
   "storage": { "production": "s3", "*": "volume" },
   "database": { "production": "mysql", "*": "sqlite" },
@@ -252,9 +239,7 @@ Actions is the deploy engine, and both would race for the state lock.
 }
 ```
 
-`protect` lists stages whose resources refuse deletion. `monitored` lists
-the stages that get alarms, the CloudWatch agent and container logs in
-CloudWatch (see [Watching a stage](#watching-a-stage)). `removal` is what
+`protect` lists stages whose resources refuse deletion. `removal` is what
 `sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
 and any RDS instance) or `retain-all`. `storage` (`volume` | `s3`) and
 `database` (`sqlite` | `postgres` | `mysql`) pick the Convex backend's file
@@ -377,111 +362,26 @@ with the key at the end: `feat(chat): add timestamps (MNL-42)`. The PR title
 becomes the squash subject. The preview comment on the PR links back to the
 issue when the branch carries a key.
 
-### Versions and releases
-
-Every pull request that changes what ships adds a changeset:
-
-```bash
-bun changeset
-```
-
-It asks for the bump (patch, minor, major) and one sentence for the release
-notes. CI refuses a PR without one unless it has the `no changeset` label,
-which Renovate adds to its own. On every push to `main`, `release.yml`
-updates a "chore: release" pull request that bumps `apps/web/package.json`
-and writes `apps/web/CHANGELOG.md`. Merging it tags `web@<version>`, publishes the
-GitHub Release from that changelog section and posts it to Slack. The
-release PR is opened with the workflow token, which triggers no CI: close
-and reopen it (or push to it) so the required `check` runs, then merge. Nothing goes to npm, and only
-`web` is versioned: `@workspace/backend` and `@workspace/ui` are internal
-and listed under `ignore`, so there is one version and one changelog.
-
-### Dependencies
-
-Renovate (`renovate.json`) opens grouped pull requests before 7am on
-Mondays. Minor, patch and digest updates merge themselves once `check`
-passes. Convex, the two container images and SST wait for a person. The
-images are pinned by digest and the Caddy build by release, so Renovate can
-move them. Install the Renovate GitHub App on the repository once.
-
-### Review
-
-`claude-review.yml` posts one review per push on every ready pull request,
-held to `CLAUDE.md`. Mention `@claude` in a comment to ask a question or
-request a change. Setup is `/install-github-app` from Claude Code, which
-installs the GitHub App and stores `ANTHROPIC_API_KEY`.
-
 ### Tests
 
 ```bash
 bun test          # scripts/ and clone/ with bun test, convex/ with vitest
-bun e2e           # playwright against Vite and the local Docker backend
-E2E_BASE_URL=https://pr-42.fullstackaws.dev bun e2e   # against a stage
 ```
 
 Convex functions are tested with `convex-test` in
 `packages/backend/convex/*.test.ts`, which the CLI leaves out of the bundle.
-Playwright specs live in `apps/web/e2e`. A spec tagged `@smoke` must never
-write: that subset runs against production after every deploy. Everything
-else runs against `pr-N`, which is thrown away.
 
 ### Bug reports
 
 Every page shows its stage and commit in the bottom-right corner, and every
-report should quote it. Three doors, one destination:
-
-- **In the app**: with a Sentry DSN set, a "Report a bug" button collects a
-  description, a screenshot and the breadcrumbs. Sentry's Linear integration
-  files the issue.
-- **On GitHub**: the bug issue form asks for the stage, URL and steps.
-  Linear's GitHub Issues sync imports it into Triage.
-- **In Slack**: Linear Asks, or the Linear app's "create issue from message".
+report should quote it.
 
 ## Watching a stage
 
-Stages listed under `monitored` in `sst.settings.json` get, from
-`infra/alerts.ts` and the `monitoring` option of `ConvexBackend`:
-
-| Alarm | Fires when |
-| --- | --- |
-| `ConvexSystemCheck` | the EC2 system status check fails for 3 minutes; also triggers EC2 recovery |
-| `ConvexCpuCredits` | the `t4g` credit balance stays under 20 for 15 minutes |
-| `ConvexMemory`, `ConvexDisk` | memory over 85% or the root disk over 80% for 10 minutes, from the CloudWatch agent |
-| `ConvexErrors` | more than 5 `ERROR` lines in the backend log in 5 minutes |
-| `ConvexDatabaseStorage`, `ConvexDatabaseCpu` | with RDS: under 2 GiB free, or CPU over 80% for 15 minutes |
-| `ConvexUnreachable` | Route 53 cannot fetch `https://<api host>/version` for 2 minutes |
-| `WebErrors`, `WebSlow` | the web Lambda errors, or its p95 duration passes 3 s |
-
-Container logs go to the log group `/mnlth/<stage>/convex` through Docker's
-`awslogs` driver, one stream per container, kept 30 days. On the box,
-`docker compose logs` still works.
-
-Every alarm notifies the stage's SNS topic, `alertsTopicArn` in the deploy
-outputs; the Route 53 alarm notifies `alertsGlobalTopicArn` in `us-east-1`,
-where that metric lives. Route both to Slack once with AWS Chatbot (in the
-console under Amazon Q Developer, chat applications): pick the `#alerts`
-channel, subscribe the two topics. No code, and alarms arrive formatted.
-
-Turning monitoring on for a stage changes its userData, which **replaces the
-instance**. With `storage: volume` and `database: sqlite` that loses the
-stage's data: export first (`bunx convex export`), or move production to
-`s3` and a managed database before enabling it.
-
-### Sentry
-
-The web app initializes Sentry when `VITE_SENTRY_DSN` is set, tagging every
-event with the stage and commit. `deploy.yml` reads the repository variables
-`SENTRY_DSN`, `SENTRY_ORG`, `SENTRY_PROJECT` and the secret
-`SENTRY_AUTH_TOKEN`; with the token, the build uploads source maps for the
-commit. All four are optional: without them the app runs as before. One
-Sentry project serves every stage; filter its alerts to `production` and
-`staging`. Self-hosted Convex has no Sentry hook of its own; function errors
-reach the browser as thrown errors, which Sentry captures, and the backend's
-own log lines feed `ConvexErrors`.
-
-An external probe (Checkly, Better Stack) on `fullstackaws.dev` and
-`api.fullstackaws.dev/version` catches what nothing inside AWS can see, and
-gives a status page. Checkly can run the `@smoke` specs on a schedule.
+The backend's logs stay on the box: `docker compose logs` under
+`/opt/convex`. An external probe (Checkly, Better Stack) on
+`fullstackaws.dev` and `api.fullstackaws.dev/version` catches what nothing
+inside AWS can see, and gives a status page.
 
 ### Slack
 
@@ -489,9 +389,8 @@ One incoming webhook per channel, stored as a repository secret:
 
 | Channel | Source | Secret |
 | --- | --- | --- |
-| `#releases` | `release.yml` via `scripts/release-slack.sh` | `SLACK_RELEASES_WEBHOOK` |
 | `#deploys` | `deploy.yml`: production and staging always, previews on failure | `SLACK_DEPLOYS_WEBHOOK` |
-| `#alerts` | CloudWatch through AWS Chatbot; Sentry's Slack app; the external probe | none |
+| `#alerts` | the external probe | none |
 | `#ci` | the GitHub Slack app: `/github subscribe christianstamati/mnlth workflows:{branch:"main"} pulls reviews` | none |
 | `#product` | Linear's Slack app | none |
 

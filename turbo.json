@@ -4,11 +4,7 @@
   "globalPassThroughEnv": [
     "VITE_CONVEX_URL",
     "VITE_STAGE_NAME",
-    "VITE_GIT_SHA",
-    "VITE_SENTRY_DSN",
-    "SENTRY_AUTH_TOKEN",
-    "SENTRY_ORG",
-    "SENTRY_PROJECT"
+    "VITE_GIT_SHA"
   ],
   "tasks": {
     "build": {

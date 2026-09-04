@@ -5,7 +5,8 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "strict": true
+    "strict": true,
+    "types": ["node", "bun"]
   },
-  "include": ["sst.config.ts", "infra/**/*.ts"]
+  "include": ["sst.config.ts", "infra/**/*.ts", "scripts/**/*.ts"]
 }

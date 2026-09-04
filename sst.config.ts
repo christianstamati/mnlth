@@ -42,7 +42,6 @@ export default $config({
     // Infra files are imported dynamically, not at the top of the file: the
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
-    const { createAlerts, lambdaAlarms } = await import("./infra/alerts")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
     const { settings, storageFor, databaseFor } = await import(
       "./infra/settings"
@@ -51,21 +50,13 @@ export default $config({
     const isProd = $app.stage === "production"
     const domain = settings.domain
 
-    // The commit the bundle was built from, for Sentry releases and the
-    // footer of every page. CI has it in the environment; a laptop asks git.
+    // The commit the bundle was built from, for the footer of every page. CI has it in the environment; a laptop asks git.
     const gitSha =
       process.env.GITHUB_SHA ??
       (await import("node:child_process"))
         .execSync("git rev-parse HEAD")
         .toString()
         .trim()
-
-    // Alarms only for the stages someone would answer for. Everything in
-    // `infra/alerts.ts` and the `monitoring` option of ConvexBackend hangs
-    // off this; PR stages get none of it.
-    const alerts = settings.monitored.includes($app.stage)
-      ? createAlerts("Alerts")
-      : undefined
 
     // ---- shared -----------------------------------------------------------
 
@@ -116,15 +107,17 @@ export default $config({
       domain,
       // Flat names, so one `*.<domain>` certificate covers every stage.
       prefix: isProd ? "" : `${$app.stage}-`,
-      // A stable address for production. Other stages follow the instance.
-      elasticIp: isProd,
+      // Every stage: the address is known before the instance launches, so
+      // the DNS records (30s of Route 53 sync) run alongside the launch
+      // instead of after it. An attached address costs the same either way.
+      elasticIp: true,
       // No key pair: shell access is `aws ssm start-session` or EC2
       // Instance Connect (see the README). Setting `keyPairId` to an
       // existing pair installs it for ec2-user and opens port 22 to all.
       // Per stage in sst.settings.json.
       storage: storageFor($app.stage),
       database: databaseFor($app.stage),
-      monitoring: alerts,
+      amiId: "ami-005ec43727e1f852a",
     })
 
     // `sst deploy` brings the backend up empty; push the functions by hand
@@ -146,17 +139,9 @@ export default $config({
         VITE_CONVEX_URL: convex.url,
         VITE_STAGE_NAME: $app.stage,
         VITE_GIT_SHA: gitSha,
-        // Public by design: a DSN only identifies the Sentry project.
-        // Empty until `sst secret set SentryDsn <dsn> --stage <stage>`.
-        VITE_SENTRY_DSN: process.env.SENTRY_DSN ?? "",
       },
       dev: { command: "bun run dev" },
     })
-
-    // No server under `sst dev`: the app runs as a local Vite process.
-    if (alerts && web.nodes.server) {
-      lambdaAlarms("Web", alerts, web.nodes.server.name)
-    }
 
     return {
       vpcId: vpc.id,
@@ -169,9 +154,6 @@ export default $config({
       convexAdminKeyParameter: convex.adminKeyParameter,
       instanceId: convex.instanceId,
       publicIp: convex.publicIp,
-      // Subscribe both to Slack through AWS Chatbot; see the README.
-      alertsTopicArn: alerts?.topic.arn,
-      alertsGlobalTopicArn: alerts?.global.topic.arn,
     }
   },
 })

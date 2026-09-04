@@ -25,8 +25,6 @@ bun dev            # local: Convex in Docker, Vite on :3000
 bun run check      # biome, writes fixes
 bun run typecheck
 bun test           # bun test for scripts/ and clone/, vitest for convex/
-bun e2e            # playwright against the local stack
-bun changeset      # every PR that changes what ships
 ```
 
 ## Rules
@@ -36,19 +34,16 @@ bun changeset      # every PR that changes what ships
 - The Convex admin key is a root credential. It lives in SSM and in the one
   process using it. Never an environment variable on the frontend and never a
   `VITE_` one: those are inlined into the client bundle.
-- `VITE_` variables are public. Sentry's DSN is fine there; a token is not.
+- `VITE_` variables are public. Never put a token in one.
 - Biome owns formatting and lint (`biome.json`). Do not argue style in review.
 - Conventional commit subjects, with the Linear key at the end when there is
   one: `feat(chat): add timestamps (MNL-42)`. The PR title becomes the squash
   subject.
 - Branches from Linear: `<you>/mnl-42-short-title`. Pushing one moves the
   issue to In Progress, the PR to In Review, the merge to Done.
-- A PR that changes behavior needs a changeset. Dependency and release PRs
-  carry the `no changeset` label instead.
 - Tests: `*.test.ts` under `scripts/` and `packages/backend/clone` run with
   `bun test`; `packages/backend/convex/*.test.ts` run with vitest and
-  convex-test; `apps/web/e2e/*.spec.ts` are Playwright. Tag a spec `@smoke`
-  only if it never writes: that subset runs against production.
+  convex-test.
 
 ## Review focus
 

@@ -70,13 +70,6 @@ jobs:
         run: bun sst deploy --stage "${{ inputs.stage }}"
         env:
           SST_PRINT_LOGS: "1"
-          # Sentry: the DSN is baked into the client bundle; the token and
-          # org/project upload source maps for this commit. All optional:
-          # unset, the app runs without Sentry and the build skips the upload.
-          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
-          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
       - name: push convex functions
         run: bun scripts/convex-deploy.ts --stage "${{ inputs.stage }}" --wait

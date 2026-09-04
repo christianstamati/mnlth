@@ -12,6 +12,10 @@
 # them. It deletes by asking AWS what is there, not by reading SST state, so
 # it finds both.
 #
+# Pass --keep-images to keep AMIs, their snapshots and key pairs: a prebaked
+# AMI (the `amiId` option of ConvexBackend) takes a while to build and has no
+# stage of its own.
+#
 # It keeps the SST bootstrap by default — the `sst-state-*` / `sst-asset-*`
 # buckets and `/sst/*` parameters — because losing those loses every stage's
 # state and passphrase. Pass --include-sst to take them too.
@@ -28,6 +32,7 @@ ASSUME_YES=0
 DRY_RUN=0
 INCLUDE_SST=0
 INCLUDE_DEFAULT_VPC=0
+KEEP_IMAGES=0
 DELETED=0
 FAILED=0
 
@@ -43,6 +48,7 @@ Options:
       --include-sst       Also delete the sst-state/sst-asset buckets and /sst/* parameters.
       --include-default-vpc
                           Also delete the region's default VPC.
+      --keep-images       Keep AMIs, their snapshots and key pairs.
   -h, --help              This text.
 USAGE
 }
@@ -55,6 +61,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --include-sst) INCLUDE_SST=1; shift ;;
     --include-default-vpc) INCLUDE_DEFAULT_VPC=1; shift ;;
+    --keep-images) KEEP_IMAGES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -291,20 +298,28 @@ section "EBS volumes, snapshots and AMIs"
 for v in $(q ec2 describe-volumes --query 'Volumes[?State==`available`].VolumeId' --output text); do
   run aws ec2 delete-volume --volume-id "$v"
 done
-for a in $(q ec2 describe-images --owners self --query 'Images[].ImageId' --output text); do
-  run aws ec2 deregister-image --image-id "$a"
-done
-for s in $(q ec2 describe-snapshots --owner-ids self --query 'Snapshots[].SnapshotId' --output text); do
-  run aws ec2 delete-snapshot --snapshot-id "$s"
-done
+if [ "$KEEP_IMAGES" -eq 1 ]; then
+  note "keeping AMIs and snapshots"
+else
+  for a in $(q ec2 describe-images --owners self --query 'Images[].ImageId' --output text); do
+    run aws ec2 deregister-image --image-id "$a"
+  done
+  for s in $(q ec2 describe-snapshots --owner-ids self --query 'Snapshots[].SnapshotId' --output text); do
+    run aws ec2 delete-snapshot --snapshot-id "$s"
+  done
+fi
 
 section "Launch templates and key pairs"
 for t in $(q ec2 describe-launch-templates --query 'LaunchTemplates[].LaunchTemplateId' --output text); do
   run aws ec2 delete-launch-template --launch-template-id "$t"
 done
-for k in $(q ec2 describe-key-pairs --query 'KeyPairs[].KeyName' --output text); do
-  run aws ec2 delete-key-pair --key-name "$k"
-done
+if [ "$KEEP_IMAGES" -eq 1 ]; then
+  note "keeping key pairs"
+else
+  for k in $(q ec2 describe-key-pairs --query 'KeyPairs[].KeyName' --output text); do
+    run aws ec2 delete-key-pair --key-name "$k"
+  done
+fi
 
 section "Network interfaces"
 for e in $(q ec2 describe-network-interfaces --query 'NetworkInterfaces[?Status==`available`].NetworkInterfaceId' --output text); do

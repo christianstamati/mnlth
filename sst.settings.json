@@ -1,8 +1,7 @@
 {
   "domain": "fullstackaws.dev",
   "region": "eu-central-1",
-  "protect": ["production"],
-  "monitored": ["production", "staging"],
+  "protect": [],
   "removal": {
     "production": "retain",
     "*": "remove"

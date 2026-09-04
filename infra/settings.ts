@@ -20,12 +20,6 @@ export interface SstSettings {
   region: string
   /** Stages whose resources are protected from deletion. */
   protect: string[]
-  /**
-   * Stages that get CloudWatch alarms, the CloudWatch agent on the box and
-   * container logs in CloudWatch Logs. The agent's metrics are billed, so
-   * keep this to the stages someone would answer an alarm for.
-   */
-  monitored: string[]
   /** What `sst remove` does with resources. */
   removal: PerStage<Removal>
   /** Where the Convex backend keeps files: the instance volume or S3. */
@@ -47,7 +41,6 @@ export const STAGE_NAME = /^[a-z0-9][a-z0-9-]{0,23}$/
 /** What `sst.settings.json` gets for every key it leaves out. */
 export const DEFAULTS: Omit<SstSettings, "domain" | "region"> = {
   protect: ["production"],
-  monitored: ["production", "staging"],
   removal: { production: "retain", "*": "remove" },
   storage: { production: "s3", "*": "volume" },
   database: { production: "mysql", "*": "sqlite" },
@@ -67,12 +60,6 @@ function check(data: unknown): SstSettings {
     (!Array.isArray(d.protect) || d.protect.some((s) => typeof s !== "string"))
   )
     fail("protect", "a list of stage names")
-  if (
-    d.monitored !== undefined &&
-    (!Array.isArray(d.monitored) ||
-      d.monitored.some((s) => typeof s !== "string"))
-  )
-    fail("monitored", "a list of stage names")
   checkPerStage("removal", d.removal, REMOVALS)
   checkPerStage("storage", d.storage, STORAGES)
   checkPerStage("database", d.database, DATABASES)
