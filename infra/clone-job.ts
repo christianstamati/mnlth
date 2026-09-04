@@ -154,10 +154,15 @@ export class CloneJob extends $util.ComponentResource {
 
     // Installs bun, then hands over to the script. `CLONE_TO=local` means
     // "leave the zip for the laptop": the script refuses `local` itself.
+    // The image boots Node 18 unless told otherwise; `bunx convex` follows
+    // the CLI's shebang to node, and the CLI needs 20 or newer
+    // (`engines` in package.json).
     const buildspec = $util.output(args.bunVersion).apply(
       (bun) => `version: 0.2
 phases:
   install:
+    runtime-versions:
+      nodejs: 22
     commands:
       - curl -fsSL https://bun.sh/install | bash -s "bun-v${bun}"
       - export PATH="$HOME/.bun/bin:$PATH"
