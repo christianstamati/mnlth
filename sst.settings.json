@@ -1,19 +1,10 @@
 {
   "domain": "fullstackaws.dev",
   "region": "eu-central-1",
-  "protect": [],
-  "removal": {
-    "production": "retain",
-    "*": "remove"
-  },
   "database": {
     "*": "sqlite"
   },
   "storage": {
     "*": "volume"
-  },
-  "stages": {
-    "main": "production",
-    "staging": "staging"
   }
 }

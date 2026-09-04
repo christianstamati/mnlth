@@ -253,17 +253,18 @@ Deploys from GitHub Actions were removed (commit b6cb0a9) for this reason.
 {
   "domain": "fullstackaws.dev",
   "region": "eu-central-1",
-  "protect": ["production"],
-  "removal": { "production": "retain", "*": "remove" },
   "storage": { "production": "s3", "*": "volume" },
   "database": { "production": "mysql", "*": "sqlite" },
   "stages": { "main": "production" }
 }
 ```
 
-`protect` lists stages whose resources refuse deletion. `removal` is what
-`sst remove` does with resources: `remove`, `retain` (keeps the VPC, subnets
-and any RDS instance) or `retain-all`. `storage` (`volume` | `s3`) and
+The deploy region, `protect` and `removal` are literals in the `app()`
+function of `sst.config.ts`, not settings: the SST Console evaluates that
+function in a sandbox with no other file, so it can import nothing. The
+`region` here is for the scripts and a deploy fails if the two disagree.
+`production` is protected and retained; everything else is removed.
+`storage` (`volume` | `s3`) and
 `database` (`sqlite` | `postgres` | `mysql`) pick the Convex backend's file
 storage and database engine. Each is one value or a map keyed by stage with
 `*` as the fallback. Stage names must be lowercase letters, digits and
@@ -493,7 +494,7 @@ by the OOM killer. `unknown` from `/version` is normal for self-hosted images.
 ## Removing a stage
 
 `production` is protected: `sst remove` refuses it until `protect` is edited
-in `sst.settings.json`. Every other stage removes cleanly, and pull request
+in the `app()` function of `sst.config.ts`. Every other stage removes cleanly, and pull request
 stages remove themselves.
 
 What `removal: "retain"` keeps is SST's fixed list, not everything: the VPC,

@@ -11,28 +11,32 @@
  */
 
 export default $config({
-  async app(input) {
-    // Domain, region and the per-stage lifecycle policy live in
-    // `sst.settings.json`. SST forbids top-level imports in this file.
-    const { checkStageName, isProtected, removalFor, settings } = await import(
-      "./infra/settings"
-    )
+  // The SST Console evaluates this function too, when a git push arrives,
+  // in a sandbox that holds this file and nothing else: no other file can
+  // be imported, and the return value is read without awaiting. So it is
+  // synchronous and everything in it is a literal. `sst.settings.json`
+  // (domain, storage, database) is only read in `run()`, which checks that
+  // its region agrees with the one here.
+  app(input) {
+    // Fail here, not minutes later inside Route 53. The stage becomes a
+    // hostname label and a resource prefix.
+    if (!/^[a-z0-9][a-z0-9-]{0,23}$/.test(input.stage))
+      throw new Error(
+        `Stage "${input.stage}" must be lowercase letters, digits and hyphens, at most 24 characters.`
+      )
 
-    // Fail here, not minutes later inside Route 53. Branch names never reach
-    // a deploy unmapped, but a manual dispatch could.
-    checkStageName(input.stage)
-
+    const isProd = input.stage === "production"
     return {
       name: "mnlth",
-      // `removal` decides what `sst remove` keeps: SST's default "retain"
-      // leaves the VPC, subnets and any RDS instance behind. `protect`
-      // refuses to delete the stage's resources at all.
-      removal: removalFor(input.stage),
-      protect: isProtected(input.stage),
+      // `removal` decides what `sst remove` keeps: "retain" leaves the VPC,
+      // subnets and any RDS instance behind. `protect` refuses to delete
+      // the stage's resources at all.
+      removal: isProd ? "retain" : "remove",
+      protect: isProd,
       home: "aws",
       providers: {
         aws: {
-          region: settings.region,
+          region: "eu-central-1",
         },
       },
     }
@@ -98,6 +102,14 @@ export default $config({
 
     const isProd = $app.stage === "production"
     const domain = settings.domain
+
+    // The scripts read the region from `sst.settings.json`; `app()` above
+    // has it as a literal. Refuse to deploy if the two drift apart.
+    const region = await aws.getRegion().then((r) => r.name)
+    if (settings.region !== region)
+      throw new Error(
+        `sst.settings.json says region "${settings.region}" but sst.config.ts deploys to "${region}"`
+      )
 
     // The commit the bundle was built from, for the footer of every page. CI has it in the environment; a laptop asks git.
     const gitSha =
