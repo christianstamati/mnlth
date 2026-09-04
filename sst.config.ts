@@ -38,6 +38,55 @@ export default $config({
     }
   },
 
+  console: {
+    autodeploy: {
+      // Which git events deploy, and to which stage. Branches map here
+      // and are skipped when unmapped, so a typo cannot create a stage;
+      // pull requests always get `pr-<number>` and are removed on close.
+      // Tags never deploy. Manual deploys from the Console skip this.
+      //
+      // The map is inline, not read from `sst.settings.json`: the Console
+      // evaluates `target` on its side from this file alone, before it has
+      // a runner with the repo checked out.
+      target(event) {
+        const branches: Record<string, string> = { main: "production" }
+        if (event.type === "branch") {
+          // Deleting a branch never removes its stage; that is a decision
+          // for a person, not a git event.
+          if (event.action !== "pushed") return undefined
+          const stage = branches[event.branch]
+          return stage ? { stage } : undefined
+        }
+        if (event.type === "pull_request") {
+          return { stage: `pr-${event.number}` }
+        }
+        return undefined
+      },
+      runner: {
+        engine: "codebuild",
+        compute: "medium",
+        // node_modules is enough: the Convex images are baked into the AMI
+        // and the web bundle is built inside the deploy.
+        cache: { paths: ["node_modules"] },
+      },
+      // The default workflow only runs `sst deploy`. This app also needs the
+      // Convex functions pushed once the stage's backend answers, which is
+      // what `convex:deploy --wait` does. `SST_STAGE` is set by the runner.
+      async workflow({ $, event }) {
+        // sst.config.ts reads GITHUB_SHA for the page footer; the runner
+        // clones shallowly, so hand it the commit rather than asking git.
+        process.env.GITHUB_SHA = event.commit.id
+        await $`bun install --frozen-lockfile`
+        if (event.action === "removed" || event.action === "remove") {
+          await $`bun sst remove`
+          return
+        }
+        await $`bun sst deploy`
+        await $`bun convex:deploy --stage ${process.env.SST_STAGE} --wait`
+      },
+    },
+  },
+
   async run() {
     // Infra files are imported dynamically, not at the top of the file: the
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.

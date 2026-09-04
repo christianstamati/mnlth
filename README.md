@@ -220,8 +220,29 @@ repository variable `AWS_ROLE_ARN`. Nothing else is stored in GitHub.
 The [SST Console](https://console.sst.dev) reads state straight from the
 `sst-state-*` bucket, so it lists every stage whoever deployed it, with its
 outputs, the web Lambda's logs and its uncaught errors. Connect the AWS
-account there once and pick `eu-central-1`. Leave Autodeploy off: GitHub
-Actions is the deploy engine, and both would race for the state lock.
+account there once and pick `eu-central-1`.
+
+#### Autodeploy
+
+The Console is the deploy engine: a push runs `sst deploy` in CodeBuild in
+this account, then pushes the Convex functions. `console.autodeploy` in
+`sst.config.ts` decides the stage: `main` deploys `production`, other
+branches are skipped unless added to the map there, pull requests get
+`pr-<number>` and are removed on close, tags never deploy. Do not run
+`sst deploy` from a laptop against a stage the Console owns; both take the
+same state lock and one of them fails.
+
+One-time setup, all in the Console:
+
+1. Workspace settings, Autodeploy: install the SST GitHub app on the
+   `mnlth` repo and link it to the app.
+2. App settings, Autodeploy, Environments: add one environment per stage
+   that may deploy, each bound to this AWS account. `production` and
+   `test` at least; a `pr-*` pattern covers pull requests. A stage without
+   an environment is not deployed.
+3. Environment variables are per environment there; none are needed today.
+
+Deploys from GitHub Actions were removed (commit b6cb0a9) for this reason.
 
 ### Deployment settings
 
