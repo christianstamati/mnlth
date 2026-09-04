@@ -3,27 +3,28 @@
 /**
  * The cloud half of `bun run convex:clone`, as a CodeBuild project in the
  * account: it clones the repository, runs `scripts/clone/cloud.ts` and either
- * imports into the target stage or drops the anonymized zip into a bucket
- * for the laptop to fetch. A stage's raw data and admin key never leave AWS.
+ * imports into the target stage or drops the anonymized zip under
+ * `snapshots/` in the assets bucket for the laptop to fetch. A stage's
+ * raw data and admin key never leave AWS.
  *
  * What it builds, once, in production:
  *
  *   - a CodeConnections connection to GitHub. It is created PENDING and
  *     has to be authorized once by hand, in the Console under Developer
  *     Tools > Connections, before the first build can clone the repository
- *   - a bucket for anonymized snapshots; objects expire after a day
  *   - the project, `<app>-clone`, on a small arm64 Amazon Linux image, with
  *     an inline buildspec that installs bun and runs the script. The stage
  *     names arrive as environment overrides on `start-build`
  *   - the project's role: read every stage's Convex parameters in SSM,
- *     write the bucket, write its log group, use the connection. Nothing
- *     else
+ *     write the snapshots prefix, write its log group, use the connection.
+ *     Nothing else; the certificate next door is out of reach
  *   - a managed policy for developers, `<app>-clone-developer`: start and
  *     watch the project, read its logs, get and delete snapshots. Attach it
  *     to a user or group by hand; it grants nothing on production itself
  *
- * `scripts/convex-clone.ts` finds the bucket and the log group from the
- * project definition, so the only name it has to know is the project's.
+ * `scripts/convex-clone.ts` finds the bucket, the prefix and the log group
+ * from the project definition, so the only name it has to know is the
+ * project's.
  */
 
 export interface CloneJobArgs {
@@ -33,13 +34,15 @@ export interface CloneJobArgs {
   branch?: $util.Input<string>
   /** The bun the buildspec installs, e.g. `1.4.0`. */
   bunVersion: $util.Input<string>
+  /** The assets bucket, and the prefix in it the snapshots go under. */
+  bucket: sst.aws.Bucket
+  prefix: string
 }
 
 export class CloneJob extends $util.ComponentResource {
   public readonly project: aws.codebuild.Project
   public readonly connection: aws.codeconnections.Connection
   public readonly developerPolicy: aws.iam.Policy
-  public readonly bucket: sst.aws.Bucket
 
   constructor(
     name: string,
@@ -61,25 +64,8 @@ export class CloneJob extends $util.ComponentResource {
       { parent }
     )
 
-    // ---- snapshots --------------------------------------------------------
-
-    this.bucket = new sst.aws.Bucket(`${name}Snapshots`, {}, { parent })
-    new aws.s3.BucketLifecycleConfigurationV2(
-      `${name}SnapshotsExpiry`,
-      {
-        bucket: this.bucket.name,
-        rules: [
-          {
-            id: "expire",
-            status: "Enabled",
-            filter: {},
-            expiration: { days: 1 },
-            abortIncompleteMultipartUpload: { daysAfterInitiation: 1 },
-          },
-        ],
-      },
-      { parent }
-    )
+    // The snapshots, and nothing else in the bucket.
+    const snapshots = $util.interpolate`${args.bucket.arn}/${args.prefix}/*`
 
     // ---- logs -------------------------------------------------------------
 
@@ -124,7 +110,7 @@ export class CloneJob extends $util.ComponentResource {
             {
               sid: "Snapshots",
               actions: ["s3:PutObject"],
-              resources: [$util.interpolate`${this.bucket.arn}/*`],
+              resources: [snapshots],
             },
             {
               sid: "Logs",
@@ -204,7 +190,8 @@ phases:
           computeType: "BUILD_GENERAL1_SMALL",
           image: "aws/codebuild/amazonlinux-aarch64-standard:3.0",
           environmentVariables: [
-            { name: "SNAPSHOT_BUCKET", value: this.bucket.name },
+            { name: "SNAPSHOT_BUCKET", value: args.bucket.name },
+            { name: "SNAPSHOT_PREFIX", value: args.prefix },
             // Overridden per build by the laptop script.
             { name: "CLONE_FROM", value: "" },
             { name: "CLONE_TO", value: "" },
@@ -252,7 +239,7 @@ phases:
             {
               sid: "Snapshots",
               actions: ["s3:GetObject", "s3:DeleteObject"],
-              resources: [$util.interpolate`${this.bucket.arn}/*`],
+              resources: [snapshots],
             },
           ],
         }).json,

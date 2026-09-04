@@ -14,9 +14,10 @@ import { join } from "node:path"
  *     address or, with `elasticIp`, at an Elastic IP that survives replacement
  *   - a system-level Caddy that terminates TLS with one Let's Encrypt wildcard
  *     certificate for `*.<domain>` (DNS-01 via Route 53) and proxies each
- *     hostname to a loopback port. Caddy keeps the certificate in a shared S3
- *     bucket, so it is issued once and reused by every stage and every
- *     replacement instance; renewal happens once for all of them too.
+ *     hostname to a loopback port. Caddy keeps the certificate under a prefix
+ *     of the assets bucket, so it is issued once and reused by every
+ *     stage and every replacement instance; renewal happens once for all of
+ *     them too.
  *   - the compose stack (`docker/docker-compose.yml`), embedded
  *     into userData so what boots on the box is what was tested locally
  *   - two SSM SecureString parameters: the instance secret (stable across
@@ -31,7 +32,8 @@ import { join } from "node:path"
  *
  *   const convex = new ConvexBackend("Convex", {
  *     vpc,
- *     certificateBucket,
+ *     certificateBucket: assets,
+ *     certificatePrefix: "certificates",
  *     domain: "fullstackaws.dev",
  *     prefix: "dev-",
  *     elasticIp: false,
@@ -99,12 +101,16 @@ export interface ConvexBackendArgs {
    */
   vpc: sst.aws.Vpc
   /**
-   * Where Caddy stores certificates, keys and its ACME account. Shared by
-   * every stage, so the wildcard certificate is obtained once and reused.
-   * Holds the private key for `*.<domain>`: every stage's instance role can
-   * read it, so a compromised box of any stage exposes production's key.
+   * The bucket Caddy stores certificates, keys and its ACME account in, under
+   * `certificatePrefix`. Shared by every stage, so the wildcard certificate
+   * is obtained once and reused. Holds the private key for `*.<domain>`:
+   * every stage's instance role can read it, so a compromised box of any
+   * stage exposes production's key. The instance gets no access to the rest
+   * of the bucket.
    */
   certificateBucket: sst.aws.Bucket
+  /** The key prefix in `certificateBucket`, without a slash, e.g. `certificates`. */
+  certificatePrefix: string
   /**
    * The Route 53 hosted zone the hostnames live in, e.g. `fullstackaws.dev`.
    * The certificate is a wildcard for `*.<domain>`, so the hostnames must sit
@@ -574,14 +580,31 @@ export class ConvexBackend extends $util.ComponentResource {
             {
               // Caddy's S3 storage: certificates, keys, account and the lock
               // it takes before issuing, so two stages never issue at once.
+              // Its prefix only: the plugin lists under the prefix it is
+              // configured with, so the condition never gets in its way.
               Effect: "Allow",
-              Action: ["s3:ListBucket", "s3:GetBucketLocation"],
+              Action: ["s3:ListBucket"],
+              Resource: [args.certificateBucket.arn],
+              Condition: {
+                StringLike: {
+                  "s3:prefix": [
+                    args.certificatePrefix,
+                    `${args.certificatePrefix}/*`,
+                  ],
+                },
+              },
+            },
+            {
+              Effect: "Allow",
+              Action: ["s3:GetBucketLocation"],
               Resource: [args.certificateBucket.arn],
             },
             {
               Effect: "Allow",
               Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-              Resource: [$interpolate`${args.certificateBucket.arn}/*`],
+              Resource: [
+                $interpolate`${args.certificateBucket.arn}/${args.certificatePrefix}/*`,
+              ],
             },
             {
               // Caddy's route53 plugin solves the DNS-01 challenge by writing
@@ -651,7 +674,7 @@ export class ConvexBackend extends $util.ComponentResource {
           `\t\thost s3.${region}.amazonaws.com`,
           `\t\tbucket ${bucket}`,
           "\t\tuse_iam_provider true",
-          "\t\tprefix caddy",
+          `\t\tprefix ${args.certificatePrefix}`,
           "\t}",
           "\tacme_dns route53 {",
           `\t\thosted_zone_id ${zoneId}`,

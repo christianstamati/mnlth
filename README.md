@@ -121,8 +121,9 @@ flowchart LR
     lambda -. "VITE_CONVEX_URL" .-> caddy
 ```
 
-Production owns the shared pieces: the VPC, the certificate bucket Caddy keeps
-its wildcard certificate in, and the CloudFront router whose `*.fullstackaws.dev`
+Production owns the shared pieces: the VPC, the assets bucket (Caddy's
+wildcard certificate under `certificates/`, clone snapshots under
+`snapshots/`), and the CloudFront router whose `*.fullstackaws.dev`
 alias is how every other stage gets a subdomain without a distribution of its
 own. It publishes their ids to SSM; every other stage reads them at deploy
 time. Production deploys first and is removed last.
@@ -146,7 +147,8 @@ docker/docker-compose.yml  the Convex stack, run by the instances and by `bun de
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
 scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local, via CodeBuild
 scripts/clone/cloud.ts     the export, anonymize and import that the clone build runs
-infra/clone-job.ts         the CodeBuild project, its role, the snapshot bucket, the developer policy
+infra/clone-job.ts         the CodeBuild project, its role, the developer policy
+infra/assets.ts       the one assets bucket and its prefixes: certificates/, snapshots/
 scripts/clone/anonymize.ts rewrites an unzipped snapshot export per the rules
 scripts/lib/stage.ts       how the scripts find a stage's URL and admin key
 packages/backend/clone/    per-field anonymization rules, checked against the schema in CI
@@ -248,9 +250,9 @@ Amazon Linux 2023 on arm64. At first boot, userData installs Docker and the
 compose plugin, downloads a Caddy build with the Route 53 and S3 plugins,
 writes `docker/docker-compose.yml` and a `.env` assembled from SSM, and starts
 both. Caddy terminates TLS for the three hostnames with one wildcard
-certificate for `*.fullstackaws.dev` (DNS-01 through Route 53), stored in the
-shared certificate bucket so it is issued once for every stage and every
-replacement instance. The compose ports are bound to loopback; the security
+certificate for `*.fullstackaws.dev` (DNS-01 through Route 53), stored under
+`certificates/` in the assets bucket so it is issued once for every
+stage and every replacement instance. The compose ports are bound to loopback; the security
 group opens 80 and 443 to the internet and 22 to EC2 Instance Connect's range
 only.
 
@@ -359,8 +361,9 @@ follows its log. The build clones `main`, reads both stages' URL and admin
 key from SSM, exports, rewrites every table per
 `packages/backend/clone/rules.ts` (`scripts/clone/cloud.ts`), and imports
 with `convex import --replace-all` so the target ends up holding exactly
-the source's tables. For `local` it drops the anonymized zip into a bucket
-whose objects expire after a day; the script downloads it, imports it into
+the source's tables. For `local` it drops the anonymized zip under
+`snapshots/` in the assets bucket, where objects expire after a day;
+the script downloads it, imports it into
 the Docker backend (`bun dev` has to be running) and deletes it. Production
 is never a target; the anonymization rules that run are the ones on
 `main`, not in your working tree.
@@ -373,8 +376,9 @@ the `mnlth-clone-developer` managed policy (its ARN is the
 `cloneDeveloperPolicyArn` output) attached to their user or group. It
 allows starting and watching that one project, reading its log group, and
 getting and deleting snapshots. Nothing on production, and no SSM. The
-build's own role reads `/mnlth/*/convex/*`, writes the bucket and its log,
-and uses the connection. Every start is a CloudTrail event with the
+build's own role reads `/mnlth/*/convex/*`, writes `snapshots/` and its
+log, and uses the connection; the certificate next to the snapshots is out
+of its reach. Every start is a CloudTrail event with the
 caller's identity; the log is in CloudWatch for two weeks.
 
 `rules.ts` says what happens to each field: `hash`, `email` and `name` are
@@ -514,7 +518,7 @@ things to know before tearing production down:
   account afterwards, and if the RDS instance was retained but its subnet
   group was not, delete the instance by hand and re-run the remove.
 
-The shared VPC, certificate bucket and router belong to production. A
+The shared VPC, assets bucket and router belong to production. A
 non-production stage references them and cannot delete them, whatever its
 removal policy says.
 
