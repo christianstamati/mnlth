@@ -121,7 +121,7 @@ flowchart LR
     lambda -. "VITE_CONVEX_URL" .-> caddy
 ```
 
-Production owns the shared pieces: the VPC, the shared data bucket (Caddy's
+Production owns the shared pieces: the VPC, the assets bucket (Caddy's
 wildcard certificate under `certificates/`, clone snapshots under
 `snapshots/`), and the CloudFront router whose `*.fullstackaws.dev`
 alias is how every other stage gets a subdomain without a distribution of its
@@ -148,7 +148,7 @@ scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key fr
 scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local, via CodeBuild
 scripts/clone/cloud.ts     the export, anonymize and import that the clone build runs
 infra/clone-job.ts         the CodeBuild project, its role, the developer policy
-infra/shared-data.ts       the one shared bucket and its prefixes: certificates/, snapshots/
+infra/assets.ts       the one assets bucket and its prefixes: certificates/, snapshots/
 scripts/clone/anonymize.ts rewrites an unzipped snapshot export per the rules
 scripts/lib/stage.ts       how the scripts find a stage's URL and admin key
 packages/backend/clone/    per-field anonymization rules, checked against the schema in CI
@@ -251,7 +251,7 @@ compose plugin, downloads a Caddy build with the Route 53 and S3 plugins,
 writes `docker/docker-compose.yml` and a `.env` assembled from SSM, and starts
 both. Caddy terminates TLS for the three hostnames with one wildcard
 certificate for `*.fullstackaws.dev` (DNS-01 through Route 53), stored under
-`certificates/` in the shared data bucket so it is issued once for every
+`certificates/` in the assets bucket so it is issued once for every
 stage and every replacement instance. The compose ports are bound to loopback; the security
 group opens 80 and 443 to the internet and 22 to EC2 Instance Connect's range
 only.
@@ -362,7 +362,7 @@ key from SSM, exports, rewrites every table per
 `packages/backend/clone/rules.ts` (`scripts/clone/cloud.ts`), and imports
 with `convex import --replace-all` so the target ends up holding exactly
 the source's tables. For `local` it drops the anonymized zip under
-`snapshots/` in the shared data bucket, where objects expire after a day;
+`snapshots/` in the assets bucket, where objects expire after a day;
 the script downloads it, imports it into
 the Docker backend (`bun dev` has to be running) and deletes it. Production
 is never a target; the anonymization rules that run are the ones on
@@ -518,7 +518,7 @@ things to know before tearing production down:
   account afterwards, and if the RDS instance was retained but its subnet
   group was not, delete the instance by hand and re-run the remove.
 
-The shared VPC, data bucket and router belong to production. A
+The shared VPC, assets bucket and router belong to production. A
 non-production stage references them and cannot delete them, whatever its
 removal policy says.
 

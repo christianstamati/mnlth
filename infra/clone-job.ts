@@ -4,7 +4,7 @@
  * The cloud half of `bun run convex:clone`, as a CodeBuild project in the
  * account: it clones the repository, runs `scripts/clone/cloud.ts` and either
  * imports into the target stage or drops the anonymized zip under
- * `snapshots/` in the shared data bucket for the laptop to fetch. A stage's
+ * `snapshots/` in the assets bucket for the laptop to fetch. A stage's
  * raw data and admin key never leave AWS.
  *
  * What it builds, once, in production:
@@ -34,7 +34,7 @@ export interface CloneJobArgs {
   branch?: $util.Input<string>
   /** The bun the buildspec installs, e.g. `1.4.0`. */
   bunVersion: $util.Input<string>
-  /** The shared data bucket, and the prefix in it the snapshots go under. */
+  /** The assets bucket, and the prefix in it the snapshots go under. */
   bucket: sst.aws.Bucket
   prefix: string
 }

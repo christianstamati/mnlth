@@ -2,7 +2,7 @@
 
 /**
  * The resources production owns and every other stage borrows: the VPC, the
- * shared data bucket (`infra/shared-data.ts`: Caddy's wildcard certificate,
+ * assets bucket (`infra/assets.ts`: Caddy's wildcard certificate,
  * clone snapshots) and the CloudFront distribution (`sst.aws.Router`) every
  * stage's web app hangs off.
  *
@@ -17,13 +17,13 @@
 /** What production publishes, and every other stage reads. */
 export interface SharedIds {
   vpcId: string
-  sharedDataBucket: string
+  assetsBucket: string
   routerDistributionId: string
 }
 
 const parameterNames = () => ({
   vpcId: `/${$app.name}/shared/vpc-id`,
-  sharedDataBucket: `/${$app.name}/shared/data-bucket`,
+  assetsBucket: `/${$app.name}/shared/assets-bucket`,
   routerDistributionId: `/${$app.name}/shared/router-distribution-id`,
 })
 
@@ -33,7 +33,7 @@ const parameterNames = () => ({
  */
 export function publishSharedIds(ids: {
   vpcId: $util.Input<string>
-  sharedDataBucket: $util.Input<string>
+  assetsBucket: $util.Input<string>
   routerDistributionId: $util.Input<string>
 }) {
   const names = parameterNames()
@@ -50,12 +50,12 @@ export function publishSharedIds(ids: {
     overwrite: true,
   })
 
-  new aws.ssm.Parameter("SharedDataBucket", {
-    name: names.sharedDataBucket,
+  new aws.ssm.Parameter("AssetsBucket", {
+    name: names.assetsBucket,
     description:
       "The bucket every stage shares: Caddy's certificate, clone snapshots. Written by production.",
     type: "String",
-    value: ids.sharedDataBucket,
+    value: ids.assetsBucket,
     overwrite: true,
   })
 
@@ -76,12 +76,12 @@ export function publishSharedIds(ids: {
  */
 export async function readSharedIds(): Promise<SharedIds> {
   const names = parameterNames()
-  const [vpcId, sharedDataBucket, routerDistributionId] = await Promise.all([
+  const [vpcId, assetsBucket, routerDistributionId] = await Promise.all([
     read(names.vpcId),
-    read(names.sharedDataBucket),
+    read(names.assetsBucket),
     read(names.routerDistributionId),
   ])
-  return { vpcId, sharedDataBucket, routerDistributionId }
+  return { vpcId, assetsBucket, routerDistributionId }
 }
 
 async function read(name: string): Promise<string> {
@@ -90,7 +90,7 @@ async function read(name: string): Promise<string> {
   } catch (cause) {
     throw new Error(
       `Could not read ${name} from SSM. Deploy the production stage first: ` +
-        "it creates the VPC, the shared data bucket and the router, and " +
+        "it creates the VPC, the assets bucket and the router, and " +
         "publishes their ids there for every other stage to read.",
       { cause }
     )

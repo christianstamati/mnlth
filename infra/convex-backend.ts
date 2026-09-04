@@ -15,7 +15,7 @@ import { join } from "node:path"
  *   - a system-level Caddy that terminates TLS with one Let's Encrypt wildcard
  *     certificate for `*.<domain>` (DNS-01 via Route 53) and proxies each
  *     hostname to a loopback port. Caddy keeps the certificate under a prefix
- *     of the shared data bucket, so it is issued once and reused by every
+ *     of the assets bucket, so it is issued once and reused by every
  *     stage and every replacement instance; renewal happens once for all of
  *     them too.
  *   - the compose stack (`docker/docker-compose.yml`), embedded
@@ -32,7 +32,7 @@ import { join } from "node:path"
  *
  *   const convex = new ConvexBackend("Convex", {
  *     vpc,
- *     certificateBucket: sharedData,
+ *     certificateBucket: assets,
  *     certificatePrefix: "certificates",
  *     domain: "fullstackaws.dev",
  *     prefix: "dev-",
