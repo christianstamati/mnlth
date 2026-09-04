@@ -41,6 +41,7 @@ export default $config({
     // `$util` / `aws` / `$app` globals only exist once `run()` is called.
     const { ConvexBackend } = await import("./infra/convex-backend")
     const { publishSharedIds, readSharedIds } = await import("./infra/shared")
+    const { CloneJob } = await import("./infra/clone-job")
 
     const isProduction = $app.stage === "production"
 
@@ -111,6 +112,19 @@ export default $config({
     // `sst deploy` brings the backend up empty; push the functions by hand
     // with `bun convex:deploy --stage <stage>`.
 
+    // ---- clone ------------------------------------------------------------
+
+    // The CodeBuild project behind `bun run convex:clone`, once, in
+    // production: it serves every stage as source or target. See
+    // `infra/clone-job.ts`; the connection to GitHub it creates has to be
+    // authorized by hand once.
+    const clone = isProduction
+      ? new CloneJob("Clone", {
+          repository: "christianstamati/mnlth",
+          bunVersion: "1.4.0",
+        })
+      : undefined
+
     // ---- web --------------------------------------------------------------
 
     // TanStack Start on a streaming Lambda (Nitro's `aws-lambda` preset in
@@ -141,6 +155,9 @@ export default $config({
       publicIp: convex.publicIp,
       vpcId: vpc.id,
       routerDistributionId: router.distributionID,
+      cloneProject: clone?.project.name,
+      cloneConnectionArn: clone?.connection.arn,
+      cloneDeveloperPolicyArn: clone?.developerPolicy.arn,
     }
   },
 })

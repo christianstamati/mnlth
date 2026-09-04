@@ -26,6 +26,11 @@ export interface Target {
   adminKey: string
 }
 
+/** The rule from CLAUDE.md: lowercase, digits and hyphens, at most 24 characters. */
+export function isStageName(value: string): boolean {
+  return /^[a-z0-9-]{1,24}$/.test(value)
+}
+
 export function parameterName(stage: string, key: string): string {
   return `/${APP}/${stage}/convex/${key}`
 }
