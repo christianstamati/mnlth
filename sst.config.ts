@@ -117,7 +117,7 @@ export default $config({
       // Per stage in sst.settings.json.
       storage: storageFor($app.stage),
       database: databaseFor($app.stage),
-      amiId: "ami-005ec43727e1f852a",
+      amiId: "ami-0e903f8d9d87a2073",
     })
 
     // `sst deploy` brings the backend up empty; push the functions by hand

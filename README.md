@@ -151,6 +151,7 @@ scripts/lib/stage.ts       how the scripts find a stage's URL and admin key
 packages/backend/clone/    per-field anonymization rules, checked against the schema in CI
 scripts/setup-dev.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
+scripts/bake-ami.sh        builds the prebaked AMI the instances boot from, with the AWS CLI
 sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
 ```
 
@@ -267,6 +268,32 @@ only.
 | `<prefix>api.` | `127.0.0.1:3210` | API and WebSocket |
 | `<prefix>site.` | `127.0.0.1:3211` | HTTP actions (404 until functions are deployed) |
 | `<prefix>dashboard.` | `127.0.0.1:6791` | Dashboard |
+
+### The machine image
+
+Installing Docker and pulling the images at boot takes ten minutes or more,
+so `amiId` in `sst.config.ts` points at a prebaked AMI that already has
+Docker, the compose plugin, the Caddy build and both Convex images on the
+disk. A stage boots from it in under a minute. The image holds only what is
+identical across stages: the compose file, the Caddyfile and the secrets are
+still written at boot.
+
+```bash
+bun bake:ami --replace
+```
+
+builds a new one with the AWS CLI alone: a throwaway VPC, a builder instance
+whose userData installs everything and shuts itself down, `create-image`, a
+boot test of the result, then the VPC and both instances are deleted. Six
+minutes. The compose plugin version and Caddy URL come from
+`infra/convex-backend.ts` and the image digests from
+`docker/docker-compose.yml`, so rebake after changing any of them and put
+the printed id in `sst.config.ts`. `--replace` deregisters the previous
+`convex-backend-*` AMIs and their snapshots once the new one passes its
+boot test. The AMI is a head start, not a requirement: with `amiId` unset
+the stock Amazon Linux image is used and userData installs the same things.
+`scripts/reset-aws.sh --keep-images` preserves the AMI through a region
+reset.
 
 ### Functions
 
