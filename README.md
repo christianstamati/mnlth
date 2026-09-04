@@ -142,7 +142,6 @@ infra/convex-backend.ts    the ConvexBackend component: instance, Caddy, DNS, SS
 packages/backend/convex/*.test.ts  function tests with convex-test, run by vitest
 CLAUDE.md                  house rules for reviewers and agents
 infra/shared.ts            production publishes shared ids to SSM; other stages read them
-infra/settings.ts          loads and validates sst.settings.json
 docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
 scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local
@@ -152,7 +151,7 @@ packages/backend/clone/    per-field anonymization rules, checked against the sc
 scripts/setup-dev.ts    the local backend in Docker, admin key and env files; turbo runs it before dev
 scripts/reset-aws.sh       empties a region with the AWS CLI, independent of SST state
 scripts/bake-ami.sh        builds the prebaked AMI the instances boot from, with the AWS CLI
-sst.config.ts              the app; sst.settings.json holds domain, region and per-stage choices
+sst.config.ts              the app: domain, region and the per-stage choices are literals in it
 ```
 
 ## Deploying
@@ -164,15 +163,16 @@ Convex functions push.
 | Git event | Stage | Lifetime |
 | --- | --- | --- |
 | push to `main` | `production` | permanent, protected |
-| push to a branch listed under `stages` | that stage | until removed |
+| push to a branch listed in `deployments.json` | that stage | until removed |
 | pull request #N | `pr-N` | removed when the PR closes |
 | any other branch | none, lint and typecheck only | |
 
-Which branches deploy is the `stages` map in `sst.settings.json`. Adding a
-developer or an environment is one line there:
+Which branches deploy is `deployments.json` at the repository root, branch
+name to stage name. Adding a developer or an environment is one line there.
+Without the file, only `main` deploys, to `production`.
 
 ```json
-"stages": { "main": "production", "staging": "staging", "christianstamati": "christianstamati" }
+{ "main": "production", "staging": "staging", "christianstamati": "christianstamati" }
 ```
 
 Pull requests from forks and draft pull requests are not deployed. A PR gets
@@ -184,11 +184,12 @@ certificate, mints its admin key); later pushes take a few.
 | --- | --- | --- |
 | `ci.yml` | every push and PR | Biome, typecheck, tests |
 | `deploy.yml` | called by the others | the one deploy job, then a Slack post to `#deploys` |
-| `deploy-branch.yml` | push | maps the branch through `stages` and deploys |
+| `deploy-branch.yml` | push | maps the branch through `deployments.json` and deploys |
 | `deploy-pr.yml` | PR opened, pushed, reopened, ready for review | deploys `pr-N` and comments its URLs |
 | `remove-pr.yml` | PR closed | `sst remove --stage pr-N`, drops its state |
 | `sweep-stages.yml` | Mondays, or by hand | removes `pr-*` stages whose PR is closed |
 | `manual.yml` | Actions tab | `deploy`, `remove`, `unlock` or `refresh` any stage |
+| `release.yml` | push to `main` | keeps the release PR current; tags and publishes when it merges |
 
 `main` is protected by a ruleset: pull requests only, squash merges, the
 `check` job green, no force pushes. Production deploys wait for one approval
@@ -224,52 +225,18 @@ account there once and pick `eu-central-1`.
 
 #### Autodeploy
 
-The Console is the deploy engine: a push runs `sst deploy` in CodeBuild in
-this account, then pushes the Convex functions. `console.autodeploy` in
-`sst.config.ts` decides the stage: `main` deploys `production`, other
-branches are skipped unless added to the map there, pull requests get
-`pr-<number>` and are removed on close, tags never deploy. Do not run
-`sst deploy` from a laptop against a stage the Console owns; both take the
-same state lock and one of them fails.
-
-One-time setup, all in the Console:
-
-1. Workspace settings, Autodeploy: install the SST GitHub app on the
-   `mnlth` repo and link it to the app.
-2. App settings, Autodeploy, Environments: add one environment per stage
-   that may deploy, each bound to this AWS account. `production` and
-   `test` at least; a `pr-*` pattern covers pull requests. A stage without
-   an environment is not deployed.
-3. Environment variables are per environment there; none are needed today.
-
-Deploys from GitHub Actions were removed (commit b6cb0a9) for this reason.
+Autodeploy is off. Deploys run from GitHub Actions, and the Console would
+take the same state lock and one of them would fail. Keep the repository
+disconnected under the app's Autodeploy settings in the Console.
 
 ### Deployment settings
 
-`sst.settings.json` holds what varies per deployment but not per stage. Only
-`domain` and `region` are required; the rest default to what is shown here.
-
-```json
-{
-  "domain": "fullstackaws.dev",
-  "region": "eu-central-1",
-  "storage": { "production": "s3", "*": "volume" },
-  "database": { "production": "mysql", "*": "sqlite" },
-  "stages": { "main": "production" }
-}
-```
-
-The deploy region, `protect` and `removal` are literals in the `app()`
-function of `sst.config.ts`, not settings: the SST Console evaluates that
-function in a sandbox with no other file, so it can import nothing. The
-`region` here is for the scripts and a deploy fails if the two disagree.
+There is no settings file. What varies per deployment is a handful of
+literals in `sst.config.ts`: the `region` and `domain` constants at the top
+of the file, `protect` and `removal` in `app()`, and the Convex backend's
+`storage` (`volume` | `s3`) and `database` (`sqlite` | `postgres` | `mysql`)
+in `run()`. The scripts read the region from its line with `sed`.
 `production` is protected and retained; everything else is removed.
-`storage` (`volume` | `s3`) and
-`database` (`sqlite` | `postgres` | `mysql`) pick the Convex backend's file
-storage and database engine. Each is one value or a map keyed by stage with
-`*` as the fallback. Stage names must be lowercase letters, digits and
-hyphens, at most 24 characters: they become hostname labels, and
-`sst.config.ts` refuses anything else before touching AWS.
 
 ## The Convex backend
 
@@ -411,6 +378,26 @@ with the key at the end: `feat(chat): add timestamps (MNL-42)`. The PR title
 becomes the squash subject. The preview comment on the PR links back to the
 issue when the branch carries a key.
 
+### Versions and releases
+
+Every pull request that changes what ships adds a changeset:
+
+```bash
+bun changeset
+```
+
+It asks for the bump (patch, minor, major) and one sentence for the release
+notes. CI refuses a PR without one unless it has the `no changeset` label.
+On every push to `main`, `release.yml` updates a "chore: release" pull
+request that bumps `apps/web/package.json` and writes
+`apps/web/CHANGELOG.md`. Merging it tags `web@<version>`, publishes the
+GitHub Release from that changelog section and posts it to Slack. The
+release PR is opened with the workflow token, which triggers no CI: close
+and reopen it (or push to it) so the required `check` runs, then merge.
+Nothing goes to npm, and only `web` is versioned: `@workspace/backend` and
+`@workspace/ui` are internal and listed under `ignore`, so there is one
+version and one changelog.
+
 ### Tests
 
 ```bash
@@ -419,11 +406,6 @@ bun test          # scripts/ and clone/ with bun test, convex/ with vitest
 
 Convex functions are tested with `convex-test` in
 `packages/backend/convex/*.test.ts`, which the CLI leaves out of the bundle.
-
-### Bug reports
-
-Every page shows its stage and commit in the bottom-right corner, and every
-report should quote it.
 
 ## Watching a stage
 
@@ -439,6 +421,7 @@ One incoming webhook per channel, stored as a repository secret:
 | Channel | Source | Secret |
 | --- | --- | --- |
 | `#deploys` | `deploy.yml`: production and staging always, previews on failure | `SLACK_DEPLOYS_WEBHOOK` |
+| `#releases` | `release.yml`: every GitHub Release | `SLACK_RELEASES_WEBHOOK` |
 | `#alerts` | the external probe | none |
 | `#ci` | the GitHub Slack app: `/github subscribe christianstamati/mnlth workflows:{branch:"main"} pulls reviews` | none |
 | `#product` | Linear's Slack app | none |
@@ -520,7 +503,7 @@ When `sst remove` has left carcasses behind or orphans no stage tracks, empty
 the whole region with the AWS CLI instead of SST state:
 
 ```bash
-bun reset:aws --dry-run   # inventory of what would go; region from sst.settings.json
+bun reset:aws --dry-run   # inventory of what would go; region from sst.config.ts
 bun reset:aws             # asks you to type the region name, then deletes
 ```
 

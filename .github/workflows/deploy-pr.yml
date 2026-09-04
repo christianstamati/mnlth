@@ -1,0 +1,68 @@
+# Every pull request from this repository gets its own stage, `pr-<number>`,
+# redeployed on each push and removed by remove-pr.yml when it closes.
+#
+# Skipped: forks (cannot assume the AWS role) and drafts (until marked ready).
+name: deploy pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    # Docs-only changes deploy nothing.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+
+jobs:
+  deploy:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    # A called workflow can only use what its caller grants.
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      stage: pr-${{ github.event.pull_request.number }}
+      environment: preview
+
+  comment:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      pull-requests: write
+    steps:
+      # Linear links the PR to the issue on its own; this links back, so the
+      # preview is one click from the ticket too.
+      - id: linear
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          key=$(printf '%s' "$BRANCH" | grep -oiE '\bmnl-[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]' || true)
+          if [ -n "$key" ]; then
+            echo "row=| Issue | [$key](https://linear.app/mnlth/issue/$key) |" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: peter-evans/find-comment@v3
+        id: find
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: "Preview stage"
+      - uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.find.outputs.comment-id }}
+          edit-mode: replace
+          body: |
+            **Preview stage** `pr-${{ github.event.pull_request.number }}` at ${{ github.event.pull_request.head.sha }}
+
+            | | |
+            |---|---|
+            | Web | ${{ needs.deploy.outputs.web_url }} |
+            | Convex | ${{ needs.deploy.outputs.convex_url }} |
+            | Dashboard | ${{ needs.deploy.outputs.convex_dashboard_url }} |
+            ${{ steps.linear.outputs.row }}
+
+            Redeployed on every push. Removed when this pull request closes.

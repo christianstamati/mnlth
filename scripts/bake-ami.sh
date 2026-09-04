@@ -29,7 +29,7 @@ usage() {
   cat <<'USAGE'
 
 Options:
-  -r, --region REGION     Region to build in. Defaults to sst.settings.json's.
+  -r, --region REGION     Region to build in. Defaults to sst.config.ts's.
   -p, --profile PROFILE   AWS profile. Defaults to the environment's.
       --instance-type T   arm64 instance type for the builder. Default t4g.small.
       --replace           Deregister every other self-owned AMI named
@@ -53,8 +53,8 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "$REGION" ]; then
-  REGION="$(sed -n 's/.*"region": *"\([^"]*\)".*/\1/p' "$ROOT/sst.settings.json" 2>/dev/null | head -1)"
-  [ -n "$REGION" ] || { echo "--region is required (no region in sst.settings.json)" >&2; exit 2; }
+  REGION="$(sed -n 's/.*const region = *"\([^"]*\)".*/\1/p' "$ROOT/sst.config.ts" 2>/dev/null | head -1)"
+  [ -n "$REGION" ] || { echo "--region is required (no region in sst.config.ts)" >&2; exit 2; }
 fi
 command -v aws >/dev/null || { echo "aws cli not found" >&2; exit 1; }
 export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"

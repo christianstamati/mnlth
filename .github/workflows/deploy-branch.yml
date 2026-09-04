@@ -1,0 +1,51 @@
+# Push to a branch listed in `deployments.json` at the repository root and
+# it deploys to that stage: `main` to production, `staging` to staging, a
+# developer's branch to their own stage. Any other branch stops at the
+# lookup. Adding a developer or an environment is one line in that file.
+# Without the file, only `main` deploys, to `production`.
+name: deploy branch
+
+on:
+  push:
+    branches: ["**"]
+    # Docs-only changes deploy nothing.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      stage: ${{ steps.map.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: deployments.json
+          sparse-checkout-cone-mode: false
+      - id: map
+        run: |
+          if [ -f deployments.json ]; then
+            stages=$(cat deployments.json)
+          else
+            stages='{ "main": "production" }'
+          fi
+          stage=$(jq -r --arg branch "$GITHUB_REF_NAME" '.[$branch] // empty' <<< "$stages")
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+          echo "branch $GITHUB_REF_NAME -> stage ${stage:-none}"
+
+  deploy:
+    needs: resolve
+    if: needs.resolve.outputs.stage != ''
+    # A called workflow can only use what its caller grants.
+    permissions:
+      id-token: write
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      stage: ${{ needs.resolve.outputs.stage }}
+      environment: ${{ needs.resolve.outputs.stage == 'production' && 'production' || 'preview' }}
+

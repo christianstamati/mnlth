@@ -2,7 +2,7 @@
 #
 # reset-aws.sh — delete every resource in one AWS region.
 #
-#   bun reset:aws --dry-run          # region from sst.settings.json
+#   bun reset:aws --dry-run          # region from sst.config.ts
 #   bun reset:aws
 #   ./scripts/reset-aws.sh --region eu-central-1
 #
@@ -41,7 +41,7 @@ usage() {
   cat <<'USAGE'
 
 Options:
-  -r, --region REGION     Region to empty. Defaults to sst.settings.json's.
+  -r, --region REGION     Region to empty. Defaults to sst.config.ts's.
   -p, --profile PROFILE   AWS profile. Defaults to the environment's.
   -y, --yes               Skip the typed confirmation.
       --dry-run           Print the inventory and what would be deleted, then stop.
@@ -68,9 +68,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$REGION" ]; then
-  SETTINGS="$(dirname "$0")/../sst.settings.json"
-  REGION="$(sed -n 's/.*"region": *"\([^"]*\)".*/\1/p' "$SETTINGS" 2>/dev/null | head -1)"
-  [ -n "$REGION" ] || { echo "--region is required (no region in $SETTINGS)" >&2; usage >&2; exit 2; }
+  CONFIG="$(dirname "$0")/../sst.config.ts"
+  REGION="$(sed -n 's/.*const region = *"\([^"]*\)".*/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+  [ -n "$REGION" ] || { echo "--region is required (no region in $CONFIG)" >&2; usage >&2; exit 2; }
 fi
 command -v aws >/dev/null || { echo "aws cli not found" >&2; exit 1; }
 

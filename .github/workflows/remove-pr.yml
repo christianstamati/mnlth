@@ -1,0 +1,50 @@
+# Tear down `pr-<number>` when its pull request closes, merged or not, and
+# drop the stage's state so the SST Console stops listing it.
+name: remove pr
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  id-token: write
+  contents: read
+
+# Same group as the deploy, so a removal waits for an in-flight deploy.
+concurrency:
+  group: sst-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  remove:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STAGE: pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: sst remove
+        run: bun sst remove --stage "$STAGE"
+        env:
+          SST_PRINT_LOGS: "1"
+
+      # `sst remove` leaves the state file and passphrase behind. Harmless,
+      # but the Console lists every stage with state. Best effort: a stage
+      # that never deployed has neither.
+      - name: drop stage state
+        continue-on-error: true
+        run: |
+          bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r .state)
+          aws s3 rm "s3://$bucket/app/mnlth/$STAGE.json"
+          aws ssm delete-parameter --name "/sst/passphrase/mnlth/$STAGE"
