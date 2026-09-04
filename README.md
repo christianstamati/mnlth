@@ -144,7 +144,9 @@ CLAUDE.md                  house rules for reviewers and agents
 infra/shared.ts            production publishes shared ids to SSM; other stages read them
 docker/docker-compose.yml  the Convex stack, run by the instances and by `bun dev`
 scripts/convex-deploy.ts   pushes functions to a stage's backend (URL and key from SSM)
-scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local
+scripts/convex-clone.ts    anonymized copy of a stage's data into another stage or local, via CodeBuild
+scripts/clone/cloud.ts     the export, anonymize and import that the clone build runs
+infra/clone-job.ts         the CodeBuild project, its role, the snapshot bucket, the developer policy
 scripts/clone/anonymize.ts rewrites an unzipped snapshot export per the rules
 scripts/lib/stage.ts       how the scripts find a stage's URL and admin key
 packages/backend/clone/    per-field anonymization rules, checked against the schema in CI
@@ -341,7 +343,9 @@ bunx convex import --replace-all snapshot.zip
 ### Cloning data between stages
 
 `convex:clone` copies one stage's data into another stage or the local
-backend, anonymized on the way:
+backend, anonymized on the way. One command; the work happens in a
+CodeBuild project in the account, so the source's data and admin key never
+leave AWS and never reach your machine:
 
 ```bash
 bun run convex:clone --from production --to dev            # cloud to cloud
@@ -349,12 +353,29 @@ bun run convex:clone --from production --to local          # cloud to laptop
 bun run convex:clone --from production --to local --include-file-storage
 ```
 
-It runs on your machine with your AWS credentials, reading the source's URL
-and admin key from SSM the way `convex:deploy` does, then exports, rewrites
-every table per `packages/backend/clone/rules.ts`, and imports with
-`convex import --replace-all` so the target ends up holding exactly the
-source's tables. Production is never a target. The work happens in a
-temporary directory that is deleted afterwards, whatever the outcome.
+The script starts a build of the `mnlth-clone` project
+(`infra/clone-job.ts`, created by the production stage), prints its id and
+follows its log. The build clones `main`, reads both stages' URL and admin
+key from SSM, exports, rewrites every table per
+`packages/backend/clone/rules.ts` (`scripts/clone/cloud.ts`), and imports
+with `convex import --replace-all` so the target ends up holding exactly
+the source's tables. For `local` it drops the anonymized zip into a bucket
+whose objects expire after a day; the script downloads it, imports it into
+the Docker backend (`bun dev` has to be running) and deletes it. Production
+is never a target; the anonymization rules that run are the ones on
+`main`, not in your working tree.
+
+Two things by hand, once. The production deploy creates a CodeConnections
+connection to GitHub in the pending state: open Developer Tools >
+Connections in the Console, pick `mnlth-github`, and finish the GitHub
+authorization, or no build can clone the repository. And developers need
+the `mnlth-clone-developer` managed policy (its ARN is the
+`cloneDeveloperPolicyArn` output) attached to their user or group. It
+allows starting and watching that one project, reading its log group, and
+getting and deleting snapshots. Nothing on production, and no SSM. The
+build's own role reads `/mnlth/*/convex/*`, writes the bucket and its log,
+and uses the connection. Every start is a CloudTrail event with the
+caller's identity; the log is in CloudWatch for two weeks.
 
 `rules.ts` says what happens to each field: `hash`, `email` and `name` are
 stable within one clone, so references between documents survive; `redact`
