@@ -1,5 +1,11 @@
 # web
 
+## 1.2.0
+
+### Minor Changes
+
+- [`1ea86f1`](https://github.com/christianstamati/mnlth/commit/1ea86f14945351b49c54144d7bdd6312ceea183f) Thanks [@christianstamati](https://github.com/christianstamati)! - Deploys run from GitHub Actions again: branch-to-stage mapping moves to `deployments.json`, the settings file folds into `sst.config.ts`, and the build footer, Sentry client and monitoring go away.
+
 ## 1.1.0
 
 ### Minor Changes
